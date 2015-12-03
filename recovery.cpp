@@ -943,8 +943,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   property_list(print_property, nullptr);
   printf("\n");
 
-  ui->Print("Supported API: %d\n", kRecoveryApiVersion);
-
   if (update_package != nullptr) {
     // It's not entirely true that we will modify the flash. But we want
     // to log the update attempt since update_package is non-NULL.
