@@ -18,7 +18,6 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <linux/fs.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -38,109 +37,108 @@
 #include <unordered_map>
 #include <vector>
 
+#include <android-base/logging.h>
 #include <android-base/parseint.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
+#include <applypatch/applypatch.h>
+#include <openssl/sha.h>
 #include <ziparchive/zip_archive.h>
 
-#include "applypatch/applypatch.h"
 #include "edify/expr.h"
 #include "error_code.h"
 #include "updater/install.h"
-#include "openssl/sha.h"
 #include "ota_io.h"
 #include "print_sha1.h"
 #include "updater/updater.h"
-
-#define BLOCKSIZE 4096
 
 // Set this to 0 to interpret 'erase' transfers to mean do a
 // BLKDISCARD ioctl (the normal behavior).  Set to 1 to interpret
 // erase to mean fill the region with zeroes.
 #define DEBUG_ERASE  0
 
-#define STASH_DIRECTORY_BASE "/cache/recovery"
-#define STASH_DIRECTORY_MODE 0700
-#define STASH_FILE_MODE 0600
+static constexpr size_t BLOCKSIZE = 4096;
+static constexpr const char* STASH_DIRECTORY_BASE = "/cache/recovery";
+static constexpr mode_t STASH_DIRECTORY_MODE = 0700;
+static constexpr mode_t STASH_FILE_MODE = 0600;
 
 struct RangeSet {
-    size_t count;             // Limit is INT_MAX.
-    size_t size;
-    std::vector<size_t> pos;  // Actual limit is INT_MAX.
+  size_t count;  // Limit is INT_MAX.
+  size_t size;
+  std::vector<size_t> pos;  // Actual limit is INT_MAX.
 };
 
 static CauseCode failure_type = kNoCause;
 static bool is_retry = false;
 static std::unordered_map<std::string, RangeSet> stash_map;
 
-static void parse_range(const std::string& range_text, RangeSet& rs) {
+static RangeSet parse_range(const std::string& range_text) {
+  RangeSet rs;
 
-    std::vector<std::string> pieces = android::base::Split(range_text, ",");
-    if (pieces.size() < 3) {
-        goto err;
+  std::vector<std::string> pieces = android::base::Split(range_text, ",");
+  if (pieces.size() < 3) {
+    goto err;
+  }
+
+  size_t num;
+  if (!android::base::ParseUint(pieces[0], &num, static_cast<size_t>(INT_MAX))) {
+    goto err;
+  }
+
+  if (num == 0 || num % 2) {
+    goto err;  // must be even
+  } else if (num != pieces.size() - 1) {
+    goto err;
+  }
+
+  rs.pos.resize(num);
+  rs.count = num / 2;
+  rs.size = 0;
+
+  for (size_t i = 0; i < num; i += 2) {
+    if (!android::base::ParseUint(pieces[i + 1], &rs.pos[i], static_cast<size_t>(INT_MAX))) {
+      goto err;
     }
 
-    size_t num;
-    if (!android::base::ParseUint(pieces[0].c_str(), &num, static_cast<size_t>(INT_MAX))) {
-        goto err;
+    if (!android::base::ParseUint(pieces[i + 2], &rs.pos[i + 1], static_cast<size_t>(INT_MAX))) {
+      goto err;
     }
 
-    if (num == 0 || num % 2) {
-        goto err; // must be even
-    } else if (num != pieces.size() - 1) {
-        goto err;
+    if (rs.pos[i] >= rs.pos[i + 1]) {
+      goto err;  // empty or negative range
     }
 
-    rs.pos.resize(num);
-    rs.count = num / 2;
-    rs.size = 0;
-
-    for (size_t i = 0; i < num; i += 2) {
-        if (!android::base::ParseUint(pieces[i+1].c_str(), &rs.pos[i],
-                                      static_cast<size_t>(INT_MAX))) {
-            goto err;
-        }
-
-        if (!android::base::ParseUint(pieces[i+2].c_str(), &rs.pos[i+1],
-                                      static_cast<size_t>(INT_MAX))) {
-            goto err;
-        }
-
-        if (rs.pos[i] >= rs.pos[i+1]) {
-            goto err; // empty or negative range
-        }
-
-        size_t sz = rs.pos[i+1] - rs.pos[i];
-        if (rs.size > SIZE_MAX - sz) {
-            goto err; // overflow
-        }
-
-        rs.size += sz;
+    size_t sz = rs.pos[i + 1] - rs.pos[i];
+    if (rs.size > SIZE_MAX - sz) {
+      goto err;  // overflow
     }
 
-    return;
+    rs.size += sz;
+  }
+
+  return rs;
 
 err:
-    fprintf(stderr, "failed to parse range '%s'\n", range_text.c_str());
-    exit(1);
+  LOG(ERROR) << "failed to parse range '" << range_text << "'";
+  exit(1);
 }
 
 static bool range_overlaps(const RangeSet& r1, const RangeSet& r2) {
-    for (size_t i = 0; i < r1.count; ++i) {
-        size_t r1_0 = r1.pos[i * 2];
-        size_t r1_1 = r1.pos[i * 2 + 1];
+  for (size_t i = 0; i < r1.count; ++i) {
+    size_t r1_0 = r1.pos[i * 2];
+    size_t r1_1 = r1.pos[i * 2 + 1];
 
-        for (size_t j = 0; j < r2.count; ++j) {
-            size_t r2_0 = r2.pos[j * 2];
-            size_t r2_1 = r2.pos[j * 2 + 1];
+    for (size_t j = 0; j < r2.count; ++j) {
+      size_t r2_0 = r2.pos[j * 2];
+      size_t r2_1 = r2.pos[j * 2 + 1];
 
-            if (!(r2_0 >= r1_1 || r1_0 >= r2_1)) {
-                return true;
-            }
-        }
+      if (!(r2_0 >= r1_1 || r1_0 >= r2_1)) {
+        return true;
+      }
     }
+  }
 
-    return false;
+  return false;
 }
 
 static int read_all(int fd, uint8_t* data, size_t size) {
@@ -149,11 +147,11 @@ static int read_all(int fd, uint8_t* data, size_t size) {
         ssize_t r = TEMP_FAILURE_RETRY(ota_read(fd, data+so_far, size-so_far));
         if (r == -1) {
             failure_type = kFreadFailure;
-            fprintf(stderr, "read failed: %s\n", strerror(errno));
+            PLOG(ERROR) << "read failed";
             return -1;
         } else if (r == 0) {
             failure_type = kFreadFailure;
-            fprintf(stderr, "read reached unexpected EOF.\n");
+            LOG(ERROR) << "read reached unexpected EOF.";
             return -1;
         }
         so_far += r;
@@ -171,7 +169,7 @@ static int write_all(int fd, const uint8_t* data, size_t size) {
         ssize_t w = TEMP_FAILURE_RETRY(ota_write(fd, data+written, size-written));
         if (w == -1) {
             failure_type = kFwriteFailure;
-            fprintf(stderr, "write failed: %s\n", strerror(errno));
+            PLOG(ERROR) << "write failed";
             return -1;
         }
         written += w;
@@ -193,7 +191,7 @@ static bool discard_blocks(int fd, off64_t offset, uint64_t size) {
     uint64_t args[2] = {static_cast<uint64_t>(offset), size};
     int status = ioctl(fd, BLKDISCARD, &args);
     if (status == -1) {
-        fprintf(stderr, "BLKDISCARD ioctl failed: %s\n", strerror(errno));
+        PLOG(ERROR) << "BLKDISCARD ioctl failed";
         return false;
     }
     return true;
@@ -203,7 +201,7 @@ static bool check_lseek(int fd, off64_t offset, int whence) {
     off64_t rc = TEMP_FAILURE_RETRY(lseek64(fd, offset, whence));
     if (rc == -1) {
         failure_type = kLseekFailure;
-        fprintf(stderr, "lseek64 failed: %s\n", strerror(errno));
+        PLOG(ERROR) << "lseek64 failed";
         return false;
     }
     return true;
@@ -229,7 +227,7 @@ static ssize_t RangeSinkWrite(const uint8_t* data, ssize_t size, void* token) {
     RangeSinkState* rss = reinterpret_cast<RangeSinkState*>(token);
 
     if (rss->p_remain == 0) {
-        fprintf(stderr, "range sink write overrun");
+        LOG(ERROR) << "range sink write overrun";
         return 0;
     }
 
@@ -426,16 +424,15 @@ static int LoadSrcTgtVersion1(CommandParameters& params, RangeSet& tgt, size_t& 
         std::vector<uint8_t>& buffer, int fd) {
 
     if (params.cpos + 1 >= params.tokens.size()) {
-        fprintf(stderr, "invalid parameters\n");
+        LOG(ERROR) << "invalid parameters";
         return -1;
     }
 
     // <src_range>
-    RangeSet src;
-    parse_range(params.tokens[params.cpos++], src);
+    RangeSet src = parse_range(params.tokens[params.cpos++]);
 
     // <tgt_range>
-    parse_range(params.tokens[params.cpos++], tgt);
+    tgt = parse_range(params.tokens[params.cpos++]);
 
     allocate(src.size * BLOCKSIZE, buffer);
     int rc = ReadBlocks(src, buffer, fd);
@@ -455,8 +452,8 @@ static int VerifyBlocks(const std::string& expected, const std::vector<uint8_t>&
 
     if (hexdigest != expected) {
         if (printerror) {
-            fprintf(stderr, "failed to verify blocks (expected %s, read %s)\n",
-                    expected.c_str(), hexdigest.c_str());
+            LOG(ERROR) << "failed to verify blocks (expected " << expected << ", read "
+                       << hexdigest << ")";
         }
         return -1;
     }
@@ -492,7 +489,7 @@ static void EnumerateStash(const std::string& dirname, StashCallback callback, v
 
     if (directory == nullptr) {
         if (errno != ENOENT) {
-            fprintf(stderr, "opendir \"%s\" failed: %s\n", dirname.c_str(), strerror(errno));
+            PLOG(ERROR) << "opendir \"" << dirname << "\" failed";
         }
         return;
     }
@@ -509,18 +506,18 @@ static void EnumerateStash(const std::string& dirname, StashCallback callback, v
 }
 
 static void UpdateFileSize(const std::string& fn, void* data) {
-    if (fn.empty() || !data) {
-        return;
-    }
+  if (fn.empty() || !data) {
+    return;
+  }
 
-    struct stat sb;
-    if (stat(fn.c_str(), &sb) == -1) {
-        fprintf(stderr, "stat \"%s\" failed: %s\n", fn.c_str(), strerror(errno));
-        return;
-    }
+  struct stat sb;
+  if (stat(fn.c_str(), &sb) == -1) {
+    PLOG(ERROR) << "stat \"" << fn << "\" failed";
+    return;
+  }
 
-    int* size = reinterpret_cast<int*>(data);
-    *size += sb.st_size;
+  size_t* size = static_cast<size_t*>(data);
+  *size += sb.st_size;
 }
 
 // Deletes the stash directory and all files in it. Assumes that it only
@@ -529,10 +526,10 @@ static void UpdateFileSize(const std::string& fn, void* data) {
 
 static void DeleteFile(const std::string& fn, void* /* data */) {
     if (!fn.empty()) {
-        fprintf(stderr, "deleting %s\n", fn.c_str());
+        LOG(INFO) << "deleting " << fn;
 
         if (unlink(fn.c_str()) == -1 && errno != ENOENT) {
-            fprintf(stderr, "unlink \"%s\" failed: %s\n", fn.c_str(), strerror(errno));
+            PLOG(ERROR) << "unlink \"" << fn << "\" failed";
         }
     }
 }
@@ -548,14 +545,14 @@ static void DeleteStash(const std::string& base) {
         return;
     }
 
-    fprintf(stderr, "deleting stash %s\n", base.c_str());
+    LOG(INFO) << "deleting stash " << base;
 
     std::string dirname = GetStashFileName(base, "", "");
     EnumerateStash(dirname, DeleteFile, nullptr);
 
     if (rmdir(dirname.c_str()) == -1) {
         if (errno != ENOENT && errno != ENOTDIR) {
-            fprintf(stderr, "rmdir \"%s\" failed: %s\n", dirname.c_str(), strerror(errno));
+            PLOG(ERROR) << "rmdir \"" << dirname << "\" failed";
         }
     }
 }
@@ -571,11 +568,11 @@ static int LoadStash(CommandParameters& params, const std::string& base, const s
             allocate(src.size * BLOCKSIZE, buffer);
 
             if (ReadBlocks(src, buffer, params.fd) == -1) {
-                fprintf(stderr, "failed to read source blocks in stash map.\n");
+                LOG(ERROR) << "failed to read source blocks in stash map.";
                 return -1;
             }
             if (VerifyBlocks(id, buffer, src.size, true) != 0) {
-                fprintf(stderr, "failed to verify loaded source blocks in stash map.\n");
+                LOG(ERROR) << "failed to verify loaded source blocks in stash map.";
                 return -1;
             }
             return 0;
@@ -599,22 +596,21 @@ static int LoadStash(CommandParameters& params, const std::string& base, const s
 
     if (res == -1) {
         if (errno != ENOENT || printnoent) {
-            fprintf(stderr, "stat \"%s\" failed: %s\n", fn.c_str(), strerror(errno));
+            PLOG(ERROR) << "stat \"" << fn << "\" failed";
         }
         return -1;
     }
 
-    fprintf(stderr, " loading %s\n", fn.c_str());
+    LOG(INFO) << " loading " << fn;
 
     if ((sb.st_size % BLOCKSIZE) != 0) {
-        fprintf(stderr, "%s size %" PRId64 " not multiple of block size %d",
-                fn.c_str(), static_cast<int64_t>(sb.st_size), BLOCKSIZE);
+        LOG(ERROR) << fn << " size " << sb.st_size << " not multiple of block size " << BLOCKSIZE;
         return -1;
     }
 
     android::base::unique_fd fd(TEMP_FAILURE_RETRY(ota_open(fn.c_str(), O_RDONLY)));
     if (fd == -1) {
-        fprintf(stderr, "open \"%s\" failed: %s\n", fn.c_str(), strerror(errno));
+        PLOG(ERROR) << "open \"" << fn << "\" failed";
         return -1;
     }
 
@@ -627,7 +623,7 @@ static int LoadStash(CommandParameters& params, const std::string& base, const s
     *blocks = sb.st_size / BLOCKSIZE;
 
     if (verify && VerifyBlocks(id, buffer, *blocks, true) != 0) {
-        fprintf(stderr, "unexpected contents in %s\n", fn.c_str());
+        LOG(ERROR) << "unexpected contents in " << fn;
         DeleteFile(fn, nullptr);
         return -1;
     }
@@ -642,7 +638,7 @@ static int WriteStash(const std::string& base, const std::string& id, int blocks
     }
 
     if (checkspace && CacheSizeCheck(blocks * BLOCKSIZE) != 0) {
-        fprintf(stderr, "not enough space to write stash\n");
+        LOG(ERROR) << "not enough space to write stash";
         return -1;
     }
 
@@ -657,7 +653,7 @@ static int WriteStash(const std::string& base, const std::string& id, int blocks
             // The file already exists and since the name is the hash of the contents,
             // it's safe to assume the contents are identical (accidental hash collisions
             // are unlikely)
-            fprintf(stderr, " skipping %d existing blocks in %s\n", blocks, cn.c_str());
+            LOG(INFO) << " skipping " << blocks << " existing blocks in " << cn;
             *exists = true;
             return 0;
         }
@@ -665,13 +661,12 @@ static int WriteStash(const std::string& base, const std::string& id, int blocks
         *exists = false;
     }
 
-    fprintf(stderr, " writing %d blocks to %s\n", blocks, cn.c_str());
+    LOG(INFO) << " writing " << blocks << " blocks to " << cn;
 
-    android::base::unique_fd fd(TEMP_FAILURE_RETRY(ota_open(fn.c_str(),
-                                                            O_WRONLY | O_CREAT | O_TRUNC,
-                                                            STASH_FILE_MODE)));
+    android::base::unique_fd fd(
+        TEMP_FAILURE_RETRY(ota_open(fn.c_str(), O_WRONLY | O_CREAT | O_TRUNC, STASH_FILE_MODE)));
     if (fd == -1) {
-        fprintf(stderr, "failed to create \"%s\": %s\n", fn.c_str(), strerror(errno));
+        PLOG(ERROR) << "failed to create \"" << fn << "\"";
         return -1;
     }
 
@@ -681,13 +676,12 @@ static int WriteStash(const std::string& base, const std::string& id, int blocks
 
     if (ota_fsync(fd) == -1) {
         failure_type = kFsyncFailure;
-        fprintf(stderr, "fsync \"%s\" failed: %s\n", fn.c_str(), strerror(errno));
+        PLOG(ERROR) << "fsync \"" << fn << "\" failed";
         return -1;
     }
 
     if (rename(fn.c_str(), cn.c_str()) == -1) {
-        fprintf(stderr, "rename(\"%s\", \"%s\") failed: %s\n", fn.c_str(), cn.c_str(),
-                strerror(errno));
+        PLOG(ERROR) << "rename(\"" << fn << "\", \"" << cn << "\") failed";
         return -1;
     }
 
@@ -696,13 +690,13 @@ static int WriteStash(const std::string& base, const std::string& id, int blocks
                                                              O_RDONLY | O_DIRECTORY)));
     if (dfd == -1) {
         failure_type = kFileOpenFailure;
-        fprintf(stderr, "failed to open \"%s\" failed: %s\n", dname.c_str(), strerror(errno));
+        PLOG(ERROR) << "failed to open \"" << dname << "\" failed";
         return -1;
     }
 
     if (ota_fsync(dfd) == -1) {
         failure_type = kFsyncFailure;
-        fprintf(stderr, "fsync \"%s\" failed: %s\n", dname.c_str(), strerror(errno));
+        PLOG(ERROR) << "fsync \"" << dname << "\" failed";
         return -1;
     }
 
@@ -713,63 +707,67 @@ static int WriteStash(const std::string& base, const std::string& id, int blocks
 // hash enough space for the expected amount of blocks we need to store. Returns
 // >0 if we created the directory, zero if it existed already, and <0 of failure.
 
-static int CreateStash(State* state, int maxblocks, const char* blockdev, std::string& base) {
-    if (blockdev == nullptr) {
-        return -1;
+static int CreateStash(State* state, size_t maxblocks, const std::string& blockdev,
+                       std::string& base) {
+  if (blockdev.empty()) {
+    return -1;
+  }
+
+  // Stash directory should be different for each partition to avoid conflicts
+  // when updating multiple partitions at the same time, so we use the hash of
+  // the block device name as the base directory
+  uint8_t digest[SHA_DIGEST_LENGTH];
+  SHA1(reinterpret_cast<const uint8_t*>(blockdev.data()), blockdev.size(), digest);
+  base = print_sha1(digest);
+
+  std::string dirname = GetStashFileName(base, "", "");
+  struct stat sb;
+  int res = stat(dirname.c_str(), &sb);
+  size_t max_stash_size = maxblocks * BLOCKSIZE;
+
+  if (res == -1 && errno != ENOENT) {
+    ErrorAbort(state, kStashCreationFailure, "stat \"%s\" failed: %s\n", dirname.c_str(),
+               strerror(errno));
+    return -1;
+  } else if (res != 0) {
+    LOG(INFO) << "creating stash " << dirname;
+    res = mkdir(dirname.c_str(), STASH_DIRECTORY_MODE);
+
+    if (res != 0) {
+      ErrorAbort(state, kStashCreationFailure, "mkdir \"%s\" failed: %s\n", dirname.c_str(),
+                 strerror(errno));
+      return -1;
     }
 
-    // Stash directory should be different for each partition to avoid conflicts
-    // when updating multiple partitions at the same time, so we use the hash of
-    // the block device name as the base directory
-    uint8_t digest[SHA_DIGEST_LENGTH];
-    SHA1(reinterpret_cast<const uint8_t*>(blockdev), strlen(blockdev), digest);
-    base = print_sha1(digest);
-
-    std::string dirname = GetStashFileName(base, "", "");
-    struct stat sb;
-    int res = stat(dirname.c_str(), &sb);
-
-    if (res == -1 && errno != ENOENT) {
-        ErrorAbort(state, kStashCreationFailure, "stat \"%s\" failed: %s\n",
-                   dirname.c_str(), strerror(errno));
-        return -1;
-    } else if (res != 0) {
-        fprintf(stderr, "creating stash %s\n", dirname.c_str());
-        res = mkdir(dirname.c_str(), STASH_DIRECTORY_MODE);
-
-        if (res != 0) {
-            ErrorAbort(state, kStashCreationFailure, "mkdir \"%s\" failed: %s\n",
-                       dirname.c_str(), strerror(errno));
-            return -1;
-        }
-
-        if (CacheSizeCheck(maxblocks * BLOCKSIZE) != 0) {
-            ErrorAbort(state, kStashCreationFailure, "not enough space for stash\n");
-            return -1;
-        }
-
-        return 1;  // Created directory
+    if (CacheSizeCheck(max_stash_size) != 0) {
+      ErrorAbort(state, kStashCreationFailure, "not enough space for stash (%zu needed)\n",
+                 max_stash_size);
+      return -1;
     }
 
-    fprintf(stderr, "using existing stash %s\n", dirname.c_str());
+    return 1;  // Created directory
+  }
 
-    // If the directory already exists, calculate the space already allocated to
-    // stash files and check if there's enough for all required blocks. Delete any
-    // partially completed stash files first.
+  LOG(INFO) << "using existing stash " << dirname;
 
-    EnumerateStash(dirname, DeletePartial, nullptr);
-    int size = 0;
-    EnumerateStash(dirname, UpdateFileSize, &size);
+  // If the directory already exists, calculate the space already allocated to
+  // stash files and check if there's enough for all required blocks. Delete any
+  // partially completed stash files first.
 
-    size = maxblocks * BLOCKSIZE - size;
+  EnumerateStash(dirname, DeletePartial, nullptr);
+  size_t existing = 0;
+  EnumerateStash(dirname, UpdateFileSize, &existing);
 
-    if (size > 0 && CacheSizeCheck(size) != 0) {
-        ErrorAbort(state, kStashCreationFailure, "not enough space for stash (%d more needed)\n",
-                   size);
-        return -1;
+  if (max_stash_size > existing) {
+    size_t needed = max_stash_size - existing;
+    if (CacheSizeCheck(needed) != 0) {
+      ErrorAbort(state, kStashCreationFailure, "not enough space for stash (%zu more needed)\n",
+                 needed);
+      return -1;
     }
+  }
 
-    return 0; // Using existing directory
+  return 0;  // Using existing directory
 }
 
 static int SaveStash(CommandParameters& params, const std::string& base,
@@ -777,7 +775,7 @@ static int SaveStash(CommandParameters& params, const std::string& base,
 
     // <stash_id> <src_range>
     if (params.cpos + 1 >= params.tokens.size()) {
-        fprintf(stderr, "missing id and/or src range fields in stash command\n");
+        LOG(ERROR) << "missing id and/or src range fields in stash command";
         return -1;
     }
     const std::string& id = params.tokens[params.cpos++];
@@ -790,8 +788,7 @@ static int SaveStash(CommandParameters& params, const std::string& base,
         return 0;
     }
 
-    RangeSet src;
-    parse_range(params.tokens[params.cpos++], src);
+    RangeSet src = parse_range(params.tokens[params.cpos++]);
 
     allocate(src.size * BLOCKSIZE, buffer);
     if (ReadBlocks(src, buffer, fd) == -1) {
@@ -804,7 +801,7 @@ static int SaveStash(CommandParameters& params, const std::string& base,
         // data later, this is an unrecoverable error. However, the command
         // that uses the data may have already completed previously, so the
         // possible failure will occur during source block verification.
-        fprintf(stderr, "failed to load source blocks for stash %s\n", id.c_str());
+        LOG(ERROR) << "failed to load source blocks for stash " << id;
         return 0;
     }
 
@@ -814,7 +811,7 @@ static int SaveStash(CommandParameters& params, const std::string& base,
         return 0;
     }
 
-    fprintf(stderr, "stashing %zu blocks to %s\n", blocks, id.c_str());
+    LOG(INFO) << "stashing " << blocks << " blocks to " << id;
     params.stashed += blocks;
     return WriteStash(base, id, blocks, buffer, false, nullptr);
 }
@@ -870,17 +867,17 @@ static int LoadSrcTgtVersion2(CommandParameters& params, RangeSet& tgt, size_t& 
     // At least it needs to provide three parameters: <tgt_range>,
     // <src_block_count> and "-"/<src_range>.
     if (params.cpos + 2 >= params.tokens.size()) {
-        fprintf(stderr, "invalid parameters\n");
+        LOG(ERROR) << "invalid parameters";
         return -1;
     }
 
     // <tgt_range>
-    parse_range(params.tokens[params.cpos++], tgt);
+    tgt = parse_range(params.tokens[params.cpos++]);
 
     // <src_block_count>
     const std::string& token = params.tokens[params.cpos++];
     if (!android::base::ParseUint(token.c_str(), &src_blocks)) {
-        fprintf(stderr, "invalid src_block_count \"%s\"\n", token.c_str());
+        LOG(ERROR) << "invalid src_block_count \"" << token << "\"";
         return -1;
     }
 
@@ -891,8 +888,7 @@ static int LoadSrcTgtVersion2(CommandParameters& params, RangeSet& tgt, size_t& 
         // no source ranges, only stashes
         params.cpos++;
     } else {
-        RangeSet src;
-        parse_range(params.tokens[params.cpos++], src);
+        RangeSet src = parse_range(params.tokens[params.cpos++]);
         int res = ReadBlocks(src, buffer, fd);
 
         if (overlap) {
@@ -908,8 +904,7 @@ static int LoadSrcTgtVersion2(CommandParameters& params, RangeSet& tgt, size_t& 
             return 0;
         }
 
-        RangeSet locs;
-        parse_range(params.tokens[params.cpos++], locs);
+        RangeSet locs = parse_range(params.tokens[params.cpos++]);
         MoveRange(buffer, locs, buffer);
     }
 
@@ -920,7 +915,7 @@ static int LoadSrcTgtVersion2(CommandParameters& params, RangeSet& tgt, size_t& 
         // stashed data should go.
         std::vector<std::string> tokens = android::base::Split(params.tokens[params.cpos++], ":");
         if (tokens.size() != 2) {
-            fprintf(stderr, "invalid parameter\n");
+            LOG(ERROR) << "invalid parameter";
             return -1;
         }
 
@@ -930,12 +925,11 @@ static int LoadSrcTgtVersion2(CommandParameters& params, RangeSet& tgt, size_t& 
         if (res == -1) {
             // These source blocks will fail verification if used later, but we
             // will let the caller decide if this is a fatal failure
-            fprintf(stderr, "failed to load stash %s\n", tokens[0].c_str());
+            LOG(ERROR) << "failed to load stash " << tokens[0];
             continue;
         }
 
-        RangeSet locs;
-        parse_range(tokens[1], locs);
+        RangeSet locs = parse_range(tokens[1]);
 
         MoveRange(buffer, locs, stash);
     }
@@ -964,7 +958,7 @@ static int LoadSrcTgtVersion3(CommandParameters& params, RangeSet& tgt, size_t& 
         bool onehash, bool& overlap) {
 
     if (params.cpos >= params.tokens.size()) {
-        fprintf(stderr, "missing source hash\n");
+        LOG(ERROR) << "missing source hash";
         return -1;
     }
 
@@ -975,7 +969,7 @@ static int LoadSrcTgtVersion3(CommandParameters& params, RangeSet& tgt, size_t& 
         tgthash = srchash;
     } else {
         if (params.cpos >= params.tokens.size()) {
-            fprintf(stderr, "missing target hash\n");
+            LOG(ERROR) << "missing target hash";
             return -1;
         }
         tgthash = params.tokens[params.cpos++];
@@ -1002,13 +996,12 @@ static int LoadSrcTgtVersion3(CommandParameters& params, RangeSet& tgt, size_t& 
         // resume from possible write errors. In verify mode, we can skip stashing
         // because the source blocks won't be overwritten.
         if (overlap && params.canwrite) {
-            fprintf(stderr, "stashing %zu overlapping blocks to %s\n", src_blocks,
-                    srchash.c_str());
+            LOG(INFO) << "stashing " << src_blocks << " overlapping blocks to " << srchash;
 
             bool stash_exists = false;
             if (WriteStash(params.stashbase, srchash, src_blocks, params.buffer, true,
                            &stash_exists) != 0) {
-                fprintf(stderr, "failed to stash overlapping source blocks\n");
+                LOG(ERROR) << "failed to stash overlapping source blocks";
                 return -1;
             }
 
@@ -1032,7 +1025,7 @@ static int LoadSrcTgtVersion3(CommandParameters& params, RangeSet& tgt, size_t& 
     }
 
     // Valid source data not available, update cannot be resumed
-    fprintf(stderr, "partition has unexpected contents\n");
+    LOG(ERROR) << "partition has unexpected contents";
     params.isunresumable = true;
 
     return -1;
@@ -1054,25 +1047,25 @@ static int PerformCommandMove(CommandParameters& params) {
     }
 
     if (status == -1) {
-        fprintf(stderr, "failed to read blocks for move\n");
+        LOG(ERROR) << "failed to read blocks for move";
         return -1;
     }
 
     if (status == 0) {
         params.foundwrites = true;
     } else if (params.foundwrites) {
-        fprintf(stderr, "warning: commands executed out of order [%s]\n", params.cmdname);
+        LOG(WARNING) << "warning: commands executed out of order [" << params.cmdname << "]";
     }
 
     if (params.canwrite) {
         if (status == 0) {
-            fprintf(stderr, "  moving %zu blocks\n", blocks);
+            LOG(INFO) << "  moving " << blocks << " blocks";
 
             if (WriteBlocks(tgt, params.buffer, params.fd) == -1) {
                 return -1;
             }
         } else {
-            fprintf(stderr, "skipping %zu already moved blocks\n", blocks);
+            LOG(INFO) << "skipping " << blocks << " already moved blocks";
         }
 
     }
@@ -1095,7 +1088,7 @@ static int PerformCommandStash(CommandParameters& params) {
 static int PerformCommandFree(CommandParameters& params) {
     // <stash_id>
     if (params.cpos >= params.tokens.size()) {
-        fprintf(stderr, "missing stash id in free command\n");
+        LOG(ERROR) << "missing stash id in free command";
         return -1;
     }
 
@@ -1116,14 +1109,13 @@ static int PerformCommandFree(CommandParameters& params) {
 static int PerformCommandZero(CommandParameters& params) {
 
     if (params.cpos >= params.tokens.size()) {
-        fprintf(stderr, "missing target blocks for zero\n");
+        LOG(ERROR) << "missing target blocks for zero";
         return -1;
     }
 
-    RangeSet tgt;
-    parse_range(params.tokens[params.cpos++], tgt);
+    RangeSet tgt = parse_range(params.tokens[params.cpos++]);
 
-    fprintf(stderr, "  zeroing %zu blocks\n", tgt.size);
+    LOG(INFO) << "  zeroing " << tgt.size << " blocks";
 
     allocate(BLOCKSIZE, params.buffer);
     memset(params.buffer.data(), 0, BLOCKSIZE);
@@ -1160,15 +1152,14 @@ static int PerformCommandZero(CommandParameters& params) {
 static int PerformCommandNew(CommandParameters& params) {
 
     if (params.cpos >= params.tokens.size()) {
-        fprintf(stderr, "missing target blocks for new\n");
+        LOG(ERROR) << "missing target blocks for new";
         return -1;
     }
 
-    RangeSet tgt;
-    parse_range(params.tokens[params.cpos++], tgt);
+    RangeSet tgt = parse_range(params.tokens[params.cpos++]);
 
     if (params.canwrite) {
-        fprintf(stderr, " writing %zu blocks of new data\n", tgt.size);
+        LOG(INFO) << " writing " << tgt.size << " blocks of new data";
 
         RangeSinkState rss(tgt);
         rss.fd = params.fd;
@@ -1204,19 +1195,19 @@ static int PerformCommandDiff(CommandParameters& params) {
 
     // <offset> <length>
     if (params.cpos + 1 >= params.tokens.size()) {
-        fprintf(stderr, "missing patch offset or length for %s\n", params.cmdname);
+        LOG(ERROR) << "missing patch offset or length for " << params.cmdname;
         return -1;
     }
 
     size_t offset;
     if (!android::base::ParseUint(params.tokens[params.cpos++].c_str(), &offset)) {
-        fprintf(stderr, "invalid patch offset\n");
+        LOG(ERROR) << "invalid patch offset";
         return -1;
     }
 
     size_t len;
     if (!android::base::ParseUint(params.tokens[params.cpos++].c_str(), &len)) {
-        fprintf(stderr, "invalid patch len\n");
+        LOG(ERROR) << "invalid patch len";
         return -1;
     }
 
@@ -1234,19 +1225,19 @@ static int PerformCommandDiff(CommandParameters& params) {
     }
 
     if (status == -1) {
-        fprintf(stderr, "failed to read blocks for diff\n");
+        LOG(ERROR) << "failed to read blocks for diff";
         return -1;
     }
 
     if (status == 0) {
         params.foundwrites = true;
     } else if (params.foundwrites) {
-        fprintf(stderr, "warning: commands executed out of order [%s]\n", params.cmdname);
+        LOG(WARNING) << "warning: commands executed out of order [" << params.cmdname << "]";
     }
 
     if (params.canwrite) {
         if (status == 0) {
-            fprintf(stderr, "patching %zu blocks to %zu\n", blocks, tgt.size);
+            LOG(INFO) << "patching " << blocks << " blocks to " << tgt.size;
 
             Value patch_value(VAL_BLOB,
                     std::string(reinterpret_cast<const char*>(params.patch_start + offset), len));
@@ -1268,24 +1259,24 @@ static int PerformCommandDiff(CommandParameters& params) {
             if (params.cmdname[0] == 'i') {      // imgdiff
                 if (ApplyImagePatch(params.buffer.data(), blocks * BLOCKSIZE, &patch_value,
                         &RangeSinkWrite, &rss, nullptr, nullptr) != 0) {
-                    fprintf(stderr, "Failed to apply image patch.\n");
+                    LOG(ERROR) << "Failed to apply image patch.";
                     return -1;
                 }
             } else {
                 if (ApplyBSDiffPatch(params.buffer.data(), blocks * BLOCKSIZE, &patch_value,
                         0, &RangeSinkWrite, &rss, nullptr) != 0) {
-                    fprintf(stderr, "Failed to apply bsdiff patch.\n");
+                    LOG(ERROR) << "Failed to apply bsdiff patch.";
                     return -1;
                 }
             }
 
             // We expect the output of the patcher to fill the tgt ranges exactly.
             if (rss.p_block != tgt.count || rss.p_remain != 0) {
-                fprintf(stderr, "range sink underrun?\n");
+                LOG(ERROR) << "range sink underrun?";
             }
         } else {
-            fprintf(stderr, "skipping %zu blocks already patched to %zu [%s]\n",
-                blocks, tgt.size, params.cmdline);
+            LOG(INFO) << "skipping " << blocks << " blocks already patched to " << tgt.size
+                      << " [" << params.cmdline << "]";
         }
     }
 
@@ -1306,25 +1297,24 @@ static int PerformCommandErase(CommandParameters& params) {
 
     struct stat sb;
     if (fstat(params.fd, &sb) == -1) {
-        fprintf(stderr, "failed to fstat device to erase: %s\n", strerror(errno));
+        PLOG(ERROR) << "failed to fstat device to erase";
         return -1;
     }
 
     if (!S_ISBLK(sb.st_mode)) {
-        fprintf(stderr, "not a block device; skipping erase\n");
+        LOG(ERROR) << "not a block device; skipping erase";
         return -1;
     }
 
     if (params.cpos >= params.tokens.size()) {
-        fprintf(stderr, "missing target blocks for erase\n");
+        LOG(ERROR) << "missing target blocks for erase";
         return -1;
     }
 
-    RangeSet tgt;
-    parse_range(params.tokens[params.cpos++], tgt);
+    RangeSet tgt = parse_range(params.tokens[params.cpos++]);
 
     if (params.canwrite) {
-        fprintf(stderr, " erasing %zu blocks\n", tgt.size);
+        LOG(INFO) << " erasing " << tgt.size << " blocks";
 
         for (size_t i = 0; i < tgt.count; ++i) {
             uint64_t blocks[2];
@@ -1334,7 +1324,7 @@ static int PerformCommandErase(CommandParameters& params) {
             blocks[1] = (tgt.pos[i * 2 + 1] - tgt.pos[i * 2]) * (uint64_t) BLOCKSIZE;
 
             if (ioctl(params.fd, BLKDISCARD, &blocks) == -1) {
-                fprintf(stderr, "BLKDISCARD ioctl failed: %s\n", strerror(errno));
+                PLOG(ERROR) << "BLKDISCARD ioctl failed";
                 return -1;
             }
         }
@@ -1362,10 +1352,10 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     CommandParameters params = {};
     params.canwrite = !dryrun;
 
-    fprintf(stderr, "performing %s\n", dryrun ? "verification" : "update");
+    LOG(INFO) << "performing " << (dryrun ? "verification" : "update");
     if (state->is_retry) {
         is_retry = true;
-        fprintf(stderr, "This update is a retry.\n");
+        LOG(INFO) << "This update is a retry.";
     }
 
     std::vector<std::unique_ptr<Value>> args;
@@ -1397,8 +1387,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
         return StringValue("");
     }
 
-    UpdaterInfo* ui = reinterpret_cast<UpdaterInfo*>(state->cookie);
-
+    UpdaterInfo* ui = static_cast<UpdaterInfo*>(state->cookie);
     if (ui == nullptr) {
         return StringValue("");
     }
@@ -1413,7 +1402,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     ZipString path_data(patch_data_fn->data.c_str());
     ZipEntry patch_entry;
     if (FindEntry(za, path_data, &patch_entry) != 0) {
-        fprintf(stderr, "%s(): no file \"%s\" in package", name, patch_data_fn->data.c_str());
+        LOG(ERROR) << name << "(): no file \"" << patch_data_fn->data << "\" in package";
         return StringValue("");
     }
 
@@ -1421,13 +1410,13 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     ZipString new_data(new_data_fn->data.c_str());
     ZipEntry new_entry;
     if (FindEntry(za, new_data, &new_entry) != 0) {
-        fprintf(stderr, "%s(): no file \"%s\" in package", name, new_data_fn->data.c_str());
+        LOG(ERROR) << name << "(): no file \"" << new_data_fn->data << "\" in package";
         return StringValue("");
     }
 
     params.fd.reset(TEMP_FAILURE_RETRY(ota_open(blockdev_filename->data.c_str(), O_RDWR)));
     if (params.fd == -1) {
-        fprintf(stderr, "open \"%s\" failed: %s\n", blockdev_filename->data.c_str(), strerror(errno));
+        PLOG(ERROR) << "open \"" << blockdev_filename->data << "\" failed";
         return StringValue("");
     }
 
@@ -1443,7 +1432,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
 
         int error = pthread_create(&params.thread, &attr, unzip_new_data, &params.nti);
         if (error != 0) {
-            fprintf(stderr, "pthread_create failed: %s\n", strerror(error));
+            PLOG(ERROR) << "pthread_create failed";
             return StringValue("");
         }
     }
@@ -1456,16 +1445,16 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     }
 
     // First line in transfer list is the version number
-    if (!android::base::ParseInt(lines[0].c_str(), &params.version, 1, 4)) {
-        fprintf(stderr, "unexpected transfer list version [%s]\n", lines[0].c_str());
+    if (!android::base::ParseInt(lines[0], &params.version, 1, 4)) {
+        LOG(ERROR) << "unexpected transfer list version [" << lines[0] << "]";
         return StringValue("");
     }
 
-    fprintf(stderr, "blockimg version is %d\n", params.version);
+    LOG(INFO) << "blockimg version is " << params.version;
 
     // Second line in transfer list is the total number of blocks we expect to write
-    int total_blocks;
-    if (!android::base::ParseInt(lines[1].c_str(), &total_blocks, 0)) {
+    size_t total_blocks;
+    if (!android::base::ParseUint(lines[1], &total_blocks)) {
         ErrorAbort(state, kArgsParsingFailure, "unexpected block count [%s]\n", lines[1].c_str());
         return StringValue("");
     }
@@ -1477,23 +1466,23 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     size_t start = 2;
     if (params.version >= 2) {
         if (lines.size() < 4) {
-            ErrorAbort(state, kArgsParsingFailure, "too few lines in the transfer list [%zu]\n",
-                       lines.size());
-            return StringValue("");
+          ErrorAbort(state, kArgsParsingFailure, "too few lines in the transfer list [%zu]\n",
+                     lines.size());
+          return StringValue("");
         }
 
         // Third line is how many stash entries are needed simultaneously
-        fprintf(stderr, "maximum stash entries %s\n", lines[2].c_str());
+        LOG(INFO) << "maximum stash entries " << lines[2];
 
         // Fourth line is the maximum number of blocks that will be stashed simultaneously
-        int stash_max_blocks;
-        if (!android::base::ParseInt(lines[3].c_str(), &stash_max_blocks, 0)) {
+        size_t stash_max_blocks;
+        if (!android::base::ParseUint(lines[3], &stash_max_blocks)) {
             ErrorAbort(state, kArgsParsingFailure, "unexpected maximum stash blocks [%s]\n",
                        lines[3].c_str());
             return StringValue("");
         }
 
-        int res = CreateStash(state, stash_max_blocks, blockdev_filename->data.c_str(), params.stashbase);
+        int res = CreateStash(state, stash_max_blocks, blockdev_filename->data, params.stashbase);
         if (res == -1) {
             return StringValue("");
         }
@@ -1507,8 +1496,8 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     std::unordered_map<std::string, const Command*> cmd_map;
     for (size_t i = 0; i < cmdcount; ++i) {
         if (cmd_map.find(commands[i].name) != cmd_map.end()) {
-            fprintf(stderr, "Error: command [%s] already exists in the cmd map.\n",
-                    commands[i].name);
+            LOG(ERROR) << "Error: command [" << commands[i].name
+                       << "] already exists in the cmd map.";
             return StringValue(strdup(""));
         }
         cmd_map[commands[i].name] = &commands[i];
@@ -1518,35 +1507,34 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
 
     // Subsequent lines are all individual transfer commands
     for (auto it = lines.cbegin() + start; it != lines.cend(); it++) {
-        const std::string& line_str(*it);
-        if (line_str.empty()) {
-            continue;
-        }
+        const std::string& line(*it);
+        if (line.empty()) continue;
 
-        params.tokens = android::base::Split(line_str, " ");
+        params.tokens = android::base::Split(line, " ");
         params.cpos = 0;
         params.cmdname = params.tokens[params.cpos++].c_str();
-        params.cmdline = line_str.c_str();
+        params.cmdline = line.c_str();
 
         if (cmd_map.find(params.cmdname) == cmd_map.end()) {
-            fprintf(stderr, "unexpected command [%s]\n", params.cmdname);
+            LOG(ERROR) << "unexpected command [" << params.cmdname << "]";
             goto pbiudone;
         }
 
         const Command* cmd = cmd_map[params.cmdname];
 
         if (cmd->f != nullptr && cmd->f(params) == -1) {
-            fprintf(stderr, "failed to execute command [%s]\n", line_str.c_str());
+            LOG(ERROR) << "failed to execute command [" << line << "]";
             goto pbiudone;
         }
 
         if (params.canwrite) {
             if (ota_fsync(params.fd) == -1) {
                 failure_type = kFsyncFailure;
-                fprintf(stderr, "fsync failed: %s\n", strerror(errno));
+                PLOG(ERROR) << "fsync failed";
                 goto pbiudone;
             }
-            fprintf(cmd_pipe, "set_progress %.4f\n", (double) params.written / total_blocks);
+            fprintf(cmd_pipe, "set_progress %.4f\n",
+                    static_cast<double>(params.written) / total_blocks);
             fflush(cmd_pipe);
         }
     }
@@ -1554,12 +1542,12 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
     if (params.canwrite) {
         pthread_join(params.thread, nullptr);
 
-        fprintf(stderr, "wrote %zu blocks; expected %d\n", params.written, total_blocks);
-        fprintf(stderr, "stashed %zu blocks\n", params.stashed);
-        fprintf(stderr, "max alloc needed was %zu\n", params.buffer.size());
+        LOG(INFO) << "wrote " << params.written << " blocks; expected " << total_blocks;
+        LOG(INFO) << "stashed " << params.stashed << " blocks";
+        LOG(INFO) << "max alloc needed was " << params.buffer.size();
 
         const char* partition = strrchr(blockdev_filename->data.c_str(), '/');
-        if (partition != nullptr && *(partition+1) != 0) {
+        if (partition != nullptr && *(partition + 1) != 0) {
             fprintf(cmd_pipe, "log bytes_written_%s: %zu\n", partition + 1,
                     params.written * BLOCKSIZE);
             fprintf(cmd_pipe, "log bytes_stashed_%s: %zu\n", partition + 1,
@@ -1570,7 +1558,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
         // may contain blocks needed to complete the update later.
         DeleteStash(params.stashbase);
     } else {
-        fprintf(stderr, "verified partition contents; update may be resumed\n");
+        LOG(INFO) << "verified partition contents; update may be resumed";
     }
 
     rc = 0;
@@ -1578,7 +1566,7 @@ static Value* PerformBlockImageUpdate(const char* name, State* state, int /* arg
 pbiudone:
     if (ota_fsync(params.fd) == -1) {
         failure_type = kFsyncFailure;
-        fprintf(stderr, "fsync failed: %s\n", strerror(errno));
+        PLOG(ERROR) << "fsync failed";
     }
     // params.fd will be automatically closed because it's a unique_fd.
 
@@ -1711,8 +1699,7 @@ Value* RangeSha1Fn(const char* name, State* state, int /* argc */, Expr* argv[])
         return StringValue("");
     }
 
-    RangeSet rs;
-    parse_range(ranges->data, rs);
+    RangeSet rs = parse_range(ranges->data);
 
     SHA_CTX ctx;
     SHA1_Init(&ctx);
@@ -1813,7 +1800,7 @@ Value* BlockImageRecoverFn(const char* name, State* state, int argc, Expr* argv[
     }
 
     // Output notice to log when recover is attempted
-    fprintf(stderr, "%s image corrupted, attempting to recover...\n", filename->data.c_str());
+    LOG(INFO) << filename->data << " image corrupted, attempting to recover...";
 
     // When opened with O_RDWR, libfec rewrites corrupted blocks when they are read
     fec::io fh(filename->data.c_str(), O_RDWR);
@@ -1836,8 +1823,7 @@ Value* BlockImageRecoverFn(const char* name, State* state, int argc, Expr* argv[
         return StringValue("");
     }
 
-    RangeSet rs;
-    parse_range(ranges->data, rs);
+    RangeSet rs = parse_range(ranges->data);
 
     uint8_t buffer[BLOCKSIZE];
 
@@ -1866,7 +1852,7 @@ Value* BlockImageRecoverFn(const char* name, State* state, int argc, Expr* argv[
             //     read and check if the errors field value has increased.
         }
     }
-    fprintf(stderr, "...%s image recovered successfully.\n", filename->data.c_str());
+    LOG(INFO) << "..." << filename->data << " image recovered successfully.";
     return StringValue("t");
 }
 

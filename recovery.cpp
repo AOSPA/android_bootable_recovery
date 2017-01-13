@@ -68,6 +68,7 @@
 #include "roots.h"
 #include "rotate_logs.h"
 #include "screen_ui.h"
+#include "stub_ui.h"
 #include "ui.h"
 
 static const struct option OPTIONS[] = {
@@ -86,6 +87,7 @@ static const struct option OPTIONS[] = {
   { "security", no_argument, NULL, 'e'},
   { "wipe_ab", no_argument, NULL, 0 },
   { "wipe_package_size", required_argument, NULL, 0 },
+  { "prompt_and_wipe_data", no_argument, NULL, 0 },
   { NULL, 0, NULL, 0 },
 };
 
@@ -137,6 +139,8 @@ struct selabel_handle* sehandle;
  * The arguments which may be supplied in the recovery.command file:
  *   --update_package=path - verify install an OTA package file
  *   --wipe_data - erase user data (and cache), then reboot
+ *   --prompt_and_wipe_data - prompt the user that data is corrupt,
+ *       with their consent erase user data (and cache), then reboot
  *   --wipe_cache - wipe cache (but not user data), then reboot
  *   --set_encrypted_filesystem=on|off - enables / diasables encrypted fs
  *   --just_exit - do nothing; exit and reboot
@@ -169,25 +173,8 @@ struct selabel_handle* sehandle;
  *    -- after this, rebooting will (try to) restart the main system --
  * 7. ** if install failed **
  *    7a. prompt_and_wait() shows an error icon and waits for the user
- *    7b; the user reboots (pulling the battery, etc) into the main system
- * 8. main() calls maybe_install_firmware_update()
- *    ** if the update contained radio/hboot firmware **:
- *    8a. m_i_f_u() writes BCB with "boot-recovery" and "--wipe_cache"
- *        -- after this, rebooting will reformat cache & restart main system --
- *    8b. m_i_f_u() writes firmware image into raw cache partition
- *    8c. m_i_f_u() writes BCB with "update-radio/hboot" and "--wipe_cache"
- *        -- after this, rebooting will attempt to reinstall firmware --
- *    8d. bootloader tries to flash firmware
- *    8e. bootloader writes BCB with "boot-recovery" (keeping "--wipe_cache")
- *        -- after this, rebooting will reformat cache & restart main system --
- *    8f. erase_volume() reformats /cache
- *    8g. finish_recovery() erases BCB
- *        -- after this, rebooting will (try to) restart the main system --
- * 9. main() calls reboot() to boot main system
+ *    7b. the user reboots (pulling the battery, etc) into the main system
  */
-
-static const int MAX_ARG_LENGTH = 4096;
-static const int MAX_ARGS = 100;
 
 // open a given path, mounting partitions as necessary
 FILE* fopen_path(const char *path, const char *mode) {
@@ -310,88 +297,81 @@ static void redirect_stdio(const char* filename) {
 //   - the actual command line
 //   - the bootloader control block (one per line, after "recovery")
 //   - the contents of COMMAND_FILE (one per line)
-static void
-get_args(int *argc, char ***argv) {
-    bootloader_message boot = {};
-    std::string err;
-    if (!read_bootloader_message(&boot, &err)) {
-        LOG(ERROR) << err;
-        // If fails, leave a zeroed bootloader_message.
-        memset(&boot, 0, sizeof(boot));
-    }
-    stage = strndup(boot.stage, sizeof(boot.stage));
+static std::vector<std::string> get_args(const int argc, char** const argv) {
+  CHECK_GT(argc, 0);
 
-    if (boot.command[0] != 0) {
-        std::string boot_command = std::string(boot.command, sizeof(boot.command));
-        LOG(INFO) << "Boot command: " << boot_command;
-    }
+  bootloader_message boot = {};
+  std::string err;
+  if (!read_bootloader_message(&boot, &err)) {
+    LOG(ERROR) << err;
+    // If fails, leave a zeroed bootloader_message.
+    boot = {};
+  }
+  stage = strndup(boot.stage, sizeof(boot.stage));
 
-    if (boot.status[0] != 0) {
-        std::string boot_status = std::string(boot.status, sizeof(boot.status));
-        LOG(INFO) << "Boot status: " << boot_status;
-    }
+  if (boot.command[0] != 0) {
+    std::string boot_command = std::string(boot.command, sizeof(boot.command));
+    LOG(INFO) << "Boot command: " << boot_command;
+  }
 
-    // --- if arguments weren't supplied, look in the bootloader control block
-    if (*argc <= 1) {
-        boot.recovery[sizeof(boot.recovery) - 1] = '\0';  // Ensure termination
-        const char *arg = strtok(boot.recovery, "\n");
-        if (arg != NULL && !strcmp(arg, "recovery")) {
-            *argv = (char **) malloc(sizeof(char *) * MAX_ARGS);
-            (*argv)[0] = strdup(arg);
-            for (*argc = 1; *argc < MAX_ARGS; ++*argc) {
-                if ((arg = strtok(NULL, "\n")) == NULL) break;
-                (*argv)[*argc] = strdup(arg);
-            }
-            LOG(INFO) << "Got arguments from boot message";
-        } else if (boot.recovery[0] != 0) {
-            std::string boot_recovery = std::string(boot.recovery, 20);
-            LOG(ERROR) << "Bad boot message\n" << "\"" <<boot_recovery << "\"";
-        }
-    }
+  if (boot.status[0] != 0) {
+    std::string boot_status = std::string(boot.status, sizeof(boot.status));
+    LOG(INFO) << "Boot status: " << boot_status;
+  }
 
-    // --- if that doesn't work, try the command file (if we have /cache).
-    if (*argc <= 1 && has_cache) {
-        FILE *fp = fopen_path(COMMAND_FILE, "r");
-        if (fp != NULL) {
-            char *token;
-            char *argv0 = (*argv)[0];
-            *argv = (char **) malloc(sizeof(char *) * MAX_ARGS);
-            (*argv)[0] = argv0;  // use the same program name
+  std::vector<std::string> args(argv, argv + argc);
 
-            char buf[MAX_ARG_LENGTH];
-            for (*argc = 1; *argc < MAX_ARGS; ++*argc) {
-                if (!fgets(buf, sizeof(buf), fp)) break;
-                token = strtok(buf, "\r\n");
-                if (token != NULL) {
-                    (*argv)[*argc] = strdup(token);  // Strip newline.
-                } else {
-                    --*argc;
-                }
-            }
+  // --- if arguments weren't supplied, look in the bootloader control block
+  if (args.size() == 1) {
+    boot.recovery[sizeof(boot.recovery) - 1] = '\0';  // Ensure termination
+    std::string boot_recovery(boot.recovery);
+    std::vector<std::string> tokens = android::base::Split(boot_recovery, "\n");
+    if (!tokens.empty() && tokens[0] == "recovery") {
+      for (auto it = tokens.begin() + 1; it != tokens.end(); it++) {
+        // Skip empty and '\0'-filled tokens.
+        if (!it->empty() && (*it)[0] != '\0') args.push_back(std::move(*it));
+      }
+      LOG(INFO) << "Got " << args.size() << " arguments from boot message";
+    } else if (boot.recovery[0] != 0) {
+      LOG(ERROR) << "Bad boot message: \"" << boot_recovery << "\"";
+    }
+  }
 
-            check_and_fclose(fp, COMMAND_FILE);
-            LOG(INFO) << "Got arguments from " << COMMAND_FILE;
-        }
+  // --- if that doesn't work, try the command file (if we have /cache).
+  if (args.size() == 1 && has_cache) {
+    std::string content;
+    if (ensure_path_mounted(COMMAND_FILE) == 0 &&
+        android::base::ReadFileToString(COMMAND_FILE, &content)) {
+      std::vector<std::string> tokens = android::base::Split(content, "\n");
+      // All the arguments in COMMAND_FILE are needed (unlike the BCB message,
+      // COMMAND_FILE doesn't use filename as the first argument).
+      for (auto it = tokens.begin(); it != tokens.end(); it++) {
+        // Skip empty and '\0'-filled tokens.
+        if (!it->empty() && (*it)[0] != '\0') args.push_back(std::move(*it));
+      }
+      LOG(INFO) << "Got " << args.size() << " arguments from " << COMMAND_FILE;
     }
+  }
 
-    // --> write the arguments we have back into the bootloader control block
-    // always boot into recovery after this (until finish_recovery() is called)
-    std::vector<std::string> options;
-    for (int i = 1; i < *argc; ++i) {
-        options.push_back((*argv)[i]);
-    }
-    if (!write_bootloader_message(options, &err)) {
-        LOG(ERROR) << err;
-    }
+  // Write the arguments (excluding the filename in args[0]) back into the
+  // bootloader control block. So the device will always boot into recovery to
+  // finish the pending work, until finish_recovery() is called.
+  std::vector<std::string> options(args.cbegin() + 1, args.cend());
+  if (!update_bootloader_message(options, &err)) {
+    LOG(ERROR) << "Failed to set BCB message: " << err;
+  }
+
+  return args;
 }
 
-static void
-set_sdcard_update_bootloader_message() {
-    std::vector<std::string> options;
-    std::string err;
-    if (!write_bootloader_message(options, &err)) {
-        LOG(ERROR) << err;
-    }
+// Set the BCB to reboot back into recovery (it won't resume the install from
+// sdcard though).
+static void set_sdcard_update_bootloader_message() {
+  std::vector<std::string> options;
+  std::string err;
+  if (!update_bootloader_message(options, &err)) {
+    LOG(ERROR) << "Failed to set BCB message: " << err;
+  }
 }
 
 // Read from kernel log into buffer and write out to file.
@@ -509,7 +489,7 @@ static void finish_recovery() {
     // Reset to normal system boot so recovery won't cycle indefinitely.
     std::string err;
     if (!clear_bootloader_message(&err)) {
-        LOG(ERROR) << err;
+        LOG(ERROR) << "Failed to clear BCB message: " << err;
     }
 
     // Remove the command file, so recovery won't repeat indefinitely.
@@ -523,117 +503,107 @@ static void finish_recovery() {
     sync();  // For good measure.
 }
 
-typedef struct _saved_log_file {
-    char* name;
-    struct stat st;
-    unsigned char* data;
-    struct _saved_log_file* next;
-} saved_log_file;
+struct saved_log_file {
+  std::string name;
+  struct stat sb;
+  std::string data;
+};
 
 static bool erase_volume(const char* volume) {
-    bool is_cache = (strcmp(volume, CACHE_ROOT) == 0);
-    bool is_data = (strcmp(volume, DATA_ROOT) == 0);
+  bool is_cache = (strcmp(volume, CACHE_ROOT) == 0);
+  bool is_data = (strcmp(volume, DATA_ROOT) == 0);
 
-    ui->SetBackground(RecoveryUI::ERASING);
-    ui->SetProgressType(RecoveryUI::INDETERMINATE);
+  ui->SetBackground(RecoveryUI::ERASING);
+  ui->SetProgressType(RecoveryUI::INDETERMINATE);
 
-    saved_log_file* head = NULL;
+  std::vector<saved_log_file> log_files;
 
-    if (is_cache) {
-        // If we're reformatting /cache, we load any past logs
-        // (i.e. "/cache/recovery/last_*") and the current log
-        // ("/cache/recovery/log") into memory, so we can restore them after
-        // the reformat.
+  if (is_cache) {
+    // If we're reformatting /cache, we load any past logs
+    // (i.e. "/cache/recovery/last_*") and the current log
+    // ("/cache/recovery/log") into memory, so we can restore them after
+    // the reformat.
 
-        ensure_path_mounted(volume);
+    ensure_path_mounted(volume);
 
-        DIR* d;
-        struct dirent* de;
-        d = opendir(CACHE_LOG_DIR);
-        if (d) {
-            char path[PATH_MAX];
-            strcpy(path, CACHE_LOG_DIR);
-            strcat(path, "/");
-            int path_len = strlen(path);
-            while ((de = readdir(d)) != NULL) {
-                if (strncmp(de->d_name, "last_", 5) == 0 || strcmp(de->d_name, "log") == 0) {
-                    saved_log_file* p = (saved_log_file*) malloc(sizeof(saved_log_file));
-                    strcpy(path+path_len, de->d_name);
-                    p->name = strdup(path);
-                    if (stat(path, &(p->st)) == 0) {
-                        // truncate files to 512kb
-                        if (p->st.st_size > (1 << 19)) {
-                            p->st.st_size = 1 << 19;
-                        }
-                        p->data = (unsigned char*) malloc(p->st.st_size);
-                        FILE* f = fopen(path, "rb");
-                        fread(p->data, 1, p->st.st_size, f);
-                        fclose(f);
-                        p->next = head;
-                        head = p;
-                    } else {
-                        free(p);
-                    }
-                }
+    struct dirent* de;
+    std::unique_ptr<DIR, decltype(&closedir)> d(opendir(CACHE_LOG_DIR), closedir);
+    if (d) {
+      while ((de = readdir(d.get())) != nullptr) {
+        if (strncmp(de->d_name, "last_", 5) == 0 || strcmp(de->d_name, "log") == 0) {
+          std::string path = android::base::StringPrintf("%s/%s", CACHE_LOG_DIR, de->d_name);
+
+          struct stat sb;
+          if (stat(path.c_str(), &sb) == 0) {
+            // truncate files to 512kb
+            if (sb.st_size > (1 << 19)) {
+              sb.st_size = 1 << 19;
             }
-            closedir(d);
-        } else {
-            if (errno != ENOENT) {
-                printf("opendir failed: %s\n", strerror(errno));
-            }
+
+            std::string data(sb.st_size, '\0');
+            FILE* f = fopen(path.c_str(), "rb");
+            fread(&data[0], 1, data.size(), f);
+            fclose(f);
+
+            log_files.emplace_back(saved_log_file{ path, sb, data });
+          }
         }
-    }
-
-    ui->Print("Formatting %s...\n", volume);
-
-    ensure_path_unmounted(volume);
-
-    int result;
-
-    if (is_data && reason && strcmp(reason, "convert_fbe") == 0) {
-        // Create convert_fbe breadcrumb file to signal to init
-        // to convert to file based encryption, not full disk encryption
-        if (mkdir(CONVERT_FBE_DIR, 0700) != 0) {
-            ui->Print("Failed to make convert_fbe dir %s\n", strerror(errno));
-            return true;
-        }
-        FILE* f = fopen(CONVERT_FBE_FILE, "wb");
-        if (!f) {
-            ui->Print("Failed to convert to file encryption %s\n", strerror(errno));
-            return true;
-        }
-        fclose(f);
-        result = format_volume(volume, CONVERT_FBE_DIR);
-        remove(CONVERT_FBE_FILE);
-        rmdir(CONVERT_FBE_DIR);
+      }
     } else {
-        result = format_volume(volume);
+      if (errno != ENOENT) {
+        PLOG(ERROR) << "Failed to opendir " << CACHE_LOG_DIR;
+      }
     }
+  }
 
-    if (is_cache) {
-        while (head) {
-            FILE* f = fopen_path(head->name, "wb");
-            if (f) {
-                fwrite(head->data, 1, head->st.st_size, f);
-                fclose(f);
-                chmod(head->name, head->st.st_mode);
-                chown(head->name, head->st.st_uid, head->st.st_gid);
-            }
-            free(head->name);
-            free(head->data);
-            saved_log_file* temp = head->next;
-            free(head);
-            head = temp;
+  ui->Print("Formatting %s...\n", volume);
+
+  ensure_path_unmounted(volume);
+
+  int result;
+
+  if (is_data && reason && strcmp(reason, "convert_fbe") == 0) {
+    // Create convert_fbe breadcrumb file to signal to init
+    // to convert to file based encryption, not full disk encryption
+    if (mkdir(CONVERT_FBE_DIR, 0700) != 0) {
+      ui->Print("Failed to make convert_fbe dir %s\n", strerror(errno));
+      return true;
+    }
+    FILE* f = fopen(CONVERT_FBE_FILE, "wb");
+    if (!f) {
+      ui->Print("Failed to convert to file encryption %s\n", strerror(errno));
+      return true;
+    }
+    fclose(f);
+    result = format_volume(volume, CONVERT_FBE_DIR);
+    remove(CONVERT_FBE_FILE);
+    rmdir(CONVERT_FBE_DIR);
+  } else {
+    result = format_volume(volume);
+  }
+
+  if (is_cache) {
+    // Re-create the log dir and write back the log entries.
+    if (ensure_path_mounted(CACHE_LOG_DIR) == 0 &&
+        dirCreateHierarchy(CACHE_LOG_DIR, 0777, nullptr, false, sehandle) == 0) {
+      for (const auto& log : log_files) {
+        if (!android::base::WriteStringToFile(log.data, log.name, log.sb.st_mode, log.sb.st_uid,
+                                              log.sb.st_gid)) {
+          PLOG(ERROR) << "Failed to write to " << log.name;
         }
-
-        // Any part of the log we'd copied to cache is now gone.
-        // Reset the pointer so we copy from the beginning of the temp
-        // log.
-        tmplog_offset = 0;
-        copy_logs();
+      }
+    } else {
+      PLOG(ERROR) << "Failed to mount / create " << CACHE_LOG_DIR;
     }
 
-    return (result == 0);
+    // Any part of the log we'd copied to cache is now gone.
+    // Reset the pointer so we copy from the beginning of the temp
+    // log.
+    tmplog_offset = 0;
+    copy_logs();
+  }
+
+  return (result == 0);
 }
 
 static int
@@ -798,12 +768,12 @@ static bool yes_no(Device* device, const char* question1, const char* question2)
     return (chosen_item == 1);
 }
 
-// Return true on success.
-static bool wipe_data(int should_confirm, Device* device) {
-    if (should_confirm && !yes_no(device, "Wipe all user data?", "  THIS CAN NOT BE UNDONE!")) {
-        return false;
-    }
+static bool ask_to_wipe_data(Device* device) {
+    return yes_no(device, "Wipe all user data?", "  THIS CAN NOT BE UNDONE!");
+}
 
+// Return true on success.
+static bool wipe_data(Device* device) {
     modified_flash = true;
 
     ui->Print("\n-- Wiping data...\n");
@@ -814,6 +784,28 @@ static bool wipe_data(int should_confirm, Device* device) {
         device->PostWipeData();
     ui->Print("Data wipe %s.\n", success ? "complete" : "failed");
     return success;
+}
+
+static bool prompt_and_wipe_data(Device* device) {
+    const char* const headers[] = {
+        "Boot halted, user data is corrupt",
+        "Wipe all user data to recover",
+        NULL
+    };
+    const char* const items[] = {
+        "Retry boot",
+        "Wipe user data",
+        NULL
+    };
+    for (;;) {
+        int chosen_item = get_menu_selection(headers, items, 1, 0, device);
+        if (chosen_item != 1) {
+            return true; // Just reboot, no wipe; not a failure, user asked for it
+        }
+        if (ask_to_wipe_data(device)) {
+            return wipe_data(device);
+        }
+    }
 }
 
 // Return true on success.
@@ -1180,8 +1172,14 @@ prompt_and_wait(Device* device, int status) {
                 return chosen_action;
 
             case Device::WIPE_DATA:
-                wipe_data(ui->IsTextVisible(), device);
-                if (!ui->IsTextVisible()) return Device::NO_ACTION;
+                if (ui->IsTextVisible()) {
+                    if (ask_to_wipe_data(device)) {
+                        wipe_data(device);
+                    }
+                } else {
+                    wipe_data(device);
+                    return Device::NO_ACTION;
+                }
                 break;
 
             case Device::WIPE_CACHE:
@@ -1357,7 +1355,7 @@ static void set_retry_bootloader_message(int retry_count, int argc, char** argv)
     // Increment the retry counter by 1.
     options.push_back(android::base::StringPrintf("--retry_count=%d", retry_count+1));
     std::string err;
-    if (!write_bootloader_message(options, &err)) {
+    if (!update_bootloader_message(options, &err)) {
         LOG(ERROR) << err;
     }
 }
@@ -1430,10 +1428,14 @@ int main(int argc, char **argv) {
     load_volume_table();
     has_cache = volume_for_path(CACHE_ROOT) != nullptr;
 
-    get_args(&argc, &argv);
+    std::vector<std::string> args = get_args(argc, argv);
+    std::vector<char*> args_to_parse(args.size());
+    std::transform(args.cbegin(), args.cend(), args_to_parse.begin(),
+                   [](const std::string& arg) { return const_cast<char*>(arg.c_str()); });
 
     const char *update_package = NULL;
     bool should_wipe_data = false;
+    bool should_prompt_and_wipe_data = false;
     bool should_wipe_cache = false;
     bool should_wipe_ab = false;
     size_t wipe_package_size = 0;
@@ -1447,7 +1449,8 @@ int main(int argc, char **argv) {
 
     int arg;
     int option_index;
-    while ((arg = getopt_long(argc, argv, "", OPTIONS, &option_index)) != -1) {
+    while ((arg = getopt_long(args_to_parse.size(), args_to_parse.data(), "", OPTIONS,
+                              &option_index)) != -1) {
         switch (arg) {
         case 'n': android::base::ParseInt(optarg, &retry_count, 0); break;
         case 'u': update_package = optarg; break;
@@ -1470,12 +1473,13 @@ int main(int argc, char **argv) {
         case 'r': reason = optarg; break;
         case 'e': security_update = true; break;
         case 0: {
-            if (strcmp(OPTIONS[option_index].name, "wipe_ab") == 0) {
+            std::string option = OPTIONS[option_index].name;
+            if (option == "wipe_ab") {
                 should_wipe_ab = true;
-                break;
-            } else if (strcmp(OPTIONS[option_index].name, "wipe_package_size") == 0) {
+            } else if (option == "wipe_package_size") {
                 android::base::ParseUint(optarg, &wipe_package_size);
-                break;
+            } else if (option == "prompt_and_wipe_data") {
+                should_prompt_and_wipe_data = true;
             }
             break;
         }
@@ -1502,8 +1506,10 @@ int main(int argc, char **argv) {
     Device* device = make_device();
     ui = device->GetUI();
 
-    ui->SetLocale(locale.c_str());
-    ui->Init();
+    if (!ui->Init(locale)) {
+      printf("Failed to initialize UI, use stub UI instead.");
+      ui = new StubRecoveryUI();
+    }
     // Set background string to "installing security update" for security update,
     // otherwise set it to "installing system update".
     ui->SetSystemUpdateText(security_update);
@@ -1529,30 +1535,10 @@ int main(int argc, char **argv) {
     device->StartRecovery();
 
     printf("Command:");
-    for (arg = 0; arg < argc; arg++) {
-        printf(" \"%s\"", argv[arg]);
+    for (const auto& arg : args) {
+        printf(" \"%s\"", arg.c_str());
     }
-    printf("\n");
-
-    if (update_package) {
-        // For backwards compatibility on the cache partition only, if
-        // we're given an old 'root' path "CACHE:foo", change it to
-        // "/cache/foo".
-        if (strncmp(update_package, "CACHE:", 6) == 0) {
-            int len = strlen(update_package) + 10;
-            char* modified_path = (char*)malloc(len);
-            if (modified_path) {
-                strlcpy(modified_path, "/cache/", len);
-                strlcat(modified_path, update_package+6, len);
-                printf("(replacing path \"%s\" with \"%s\")\n",
-                       update_package, modified_path);
-                update_package = modified_path;
-            }
-            else
-                printf("modified_path allocation failed\n");
-        }
-    }
-    printf("\n");
+    printf("\n\n");
 
     property_list(print_property, NULL);
     printf("\n");
@@ -1612,9 +1598,16 @@ int main(int argc, char **argv) {
             }
         }
     } else if (should_wipe_data) {
-        if (!wipe_data(false, device)) {
+        if (!wipe_data(device)) {
             status = INSTALL_ERROR;
         }
+    } else if (should_prompt_and_wipe_data) {
+        ui->ShowText(true);
+        ui->SetBackground(RecoveryUI::ERROR);
+        if (!prompt_and_wipe_data(device)) {
+            status = INSTALL_ERROR;
+        }
+        ui->ShowText(false);
     } else if (should_wipe_cache) {
         if (!wipe_cache(false, device)) {
             status = INSTALL_ERROR;

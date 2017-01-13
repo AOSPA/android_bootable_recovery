@@ -42,8 +42,9 @@ static const size_t WIPE_PACKAGE_OFFSET_IN_MISC = 16 * 1024;
  * It is also updated by the bootloader when firmware update
  * is complete (to boot into recovery for any final cleanup)
  *
- * The status field is written by the bootloader after the
- * completion of an "update-radio" or "update-hboot" command.
+ * The status field was used by the bootloader after the completion
+ * of an "update-radio" or "update-hboot" command, which has been
+ * deprecated since Froyo.
  *
  * The recovery field is only written by linux and used
  * for the system to send a message to recovery or the
@@ -193,8 +194,13 @@ bool write_bootloader_message(const bootloader_message& boot, std::string* err);
 bool write_bootloader_message_to(const bootloader_message& boot,
                                  const std::string& misc_blk_device, std::string* err);
 
-// Write bootloader message (boots into recovery with the options) to BCB.
+// Write bootloader message (boots into recovery with the options) to BCB. Will
+// set the command and recovery fields, and reset the rest.
 bool write_bootloader_message(const std::vector<std::string>& options, std::string* err);
+
+// Update bootloader message (boots into recovery with the options) to BCB. Will
+// only update the command and recovery fields.
+bool update_bootloader_message(const std::vector<std::string>& options, std::string* err);
 
 // Clear BCB.
 bool clear_bootloader_message(std::string* err);
