@@ -14,21 +14,19 @@
  * limitations under the License.
  */
 
+#include <fcntl.h>
+#include <linux/fb.h>
+#include <linux/kd.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-
-#include <fcntl.h>
-#include <stdio.h>
-
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/types.h>
-
-#include <linux/fb.h>
-#include <linux/kd.h>
+#include <unistd.h>
 
 #include <vector>
+
 #include <png.h>
 
 #include "minui/minui.h"
@@ -374,7 +372,9 @@ int res_create_alpha_surface(const char* name, GRSurface** pSurface) {
 // This function tests if a locale string stored in PNG (prefix) matches
 // the locale string provided by the system (locale).
 bool matches_locale(const char* prefix, const char* locale) {
-    if (locale == NULL) return false;
+    if (locale == nullptr) {
+        return false;
+    }
 
     // Return true if the whole string of prefix matches the top part of
     // locale. For instance, prefix == "en" matches locale == "en_US";
