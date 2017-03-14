@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#include <string>
+
 #define STRINGIFY(x) #x
 #define EXPAND(x) STRINGIFY(x)
 
@@ -29,7 +31,7 @@ extern RecoveryUI* ui;
 extern bool modified_flash;
 
 // The current stage, e.g. "1/2".
-extern const char* stage;
+extern std::string stage;
 
 // The reason argument provided in "--reason=".
 extern const char* reason;
