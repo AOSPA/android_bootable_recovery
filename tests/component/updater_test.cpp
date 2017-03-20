@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include <string>
+#include <vector>
 
 #include <android-base/file.h>
 #include <android-base/properties.h>
@@ -27,12 +28,17 @@
 #include <android-base/strings.h>
 #include <android-base/test_utils.h>
 #include <bootloader_message/bootloader_message.h>
+#include <bsdiff.h>
 #include <gtest/gtest.h>
 #include <ziparchive/zip_archive.h>
+#include <ziparchive/zip_writer.h>
 
 #include "common/test_constants.h"
 #include "edify/expr.h"
 #include "error_code.h"
+#include "otautil/SysUtil.h"
+#include "print_sha1.h"
+#include "updater/blockimg.h"
 #include "updater/install.h"
 #include "updater/updater.h"
 
@@ -64,12 +70,19 @@ static void expect(const char* expected, const char* expr_str, CauseCode cause_c
   ASSERT_EQ(cause_code, state.cause_code);
 }
 
+static std::string get_sha1(const std::string& content) {
+  uint8_t digest[SHA_DIGEST_LENGTH];
+  SHA1(reinterpret_cast<const uint8_t*>(content.c_str()), content.size(), digest);
+  return print_sha1(digest);
+}
+
 class UpdaterTest : public ::testing::Test {
-  protected:
-    virtual void SetUp() {
-        RegisterBuiltins();
-        RegisterInstallFunctions();
-    }
+ protected:
+  virtual void SetUp() override {
+    RegisterBuiltins();
+    RegisterInstallFunctions();
+    RegisterBlockImageFunctions();
+  }
 };
 
 TEST_F(UpdaterTest, getprop) {
@@ -159,119 +172,6 @@ TEST_F(UpdaterTest, file_getprop) {
     std::string script6("file_getprop(\"" + std::string(temp_file2.path) +
                        "\", \"ro.product.model\")");
     expect("", script6.c_str(), kNoCause);
-}
-
-TEST_F(UpdaterTest, delete) {
-    // Delete none.
-    expect("0", "delete()", kNoCause);
-    expect("0", "delete(\"/doesntexist\")", kNoCause);
-    expect("0", "delete(\"/doesntexist1\", \"/doesntexist2\")", kNoCause);
-    expect("0", "delete(\"/doesntexist1\", \"/doesntexist2\", \"/doesntexist3\")", kNoCause);
-
-    // Delete one file.
-    TemporaryFile temp_file1;
-    ASSERT_TRUE(android::base::WriteStringToFile("abc", temp_file1.path));
-    std::string script1("delete(\"" + std::string(temp_file1.path) + "\")");
-    expect("1", script1.c_str(), kNoCause);
-
-    // Delete two files.
-    TemporaryFile temp_file2;
-    ASSERT_TRUE(android::base::WriteStringToFile("abc", temp_file2.path));
-    TemporaryFile temp_file3;
-    ASSERT_TRUE(android::base::WriteStringToFile("abc", temp_file3.path));
-    std::string script2("delete(\"" + std::string(temp_file2.path) + "\", \"" +
-                        std::string(temp_file3.path) + "\")");
-    expect("2", script2.c_str(), kNoCause);
-
-    // Delete already deleted files.
-    expect("0", script2.c_str(), kNoCause);
-
-    // Delete one out of three.
-    TemporaryFile temp_file4;
-    ASSERT_TRUE(android::base::WriteStringToFile("abc", temp_file4.path));
-    std::string script3("delete(\"/doesntexist1\", \"" + std::string(temp_file4.path) +
-                        "\", \"/doesntexist2\")");
-    expect("1", script3.c_str(), kNoCause);
-}
-
-TEST_F(UpdaterTest, rename) {
-    // rename() expects two arguments.
-    expect(nullptr, "rename()", kArgsParsingFailure);
-    expect(nullptr, "rename(\"arg1\")", kArgsParsingFailure);
-    expect(nullptr, "rename(\"arg1\", \"arg2\", \"arg3\")", kArgsParsingFailure);
-
-    // src_name or dst_name cannot be empty.
-    expect(nullptr, "rename(\"\", \"arg2\")", kArgsParsingFailure);
-    expect(nullptr, "rename(\"arg1\", \"\")", kArgsParsingFailure);
-
-    // File doesn't exist (both of src and dst).
-    expect(nullptr, "rename(\"/doesntexist\", \"/doesntexisteither\")" , kFileRenameFailure);
-
-    // Can't create parent directory.
-    TemporaryFile temp_file1;
-    ASSERT_TRUE(android::base::WriteStringToFile("abc", temp_file1.path));
-    std::string script1("rename(\"" + std::string(temp_file1.path) + "\", \"/proc/0/file1\")");
-    expect(nullptr, script1.c_str(), kFileRenameFailure);
-
-    // Rename.
-    TemporaryFile temp_file2;
-    std::string script2("rename(\"" + std::string(temp_file1.path) + "\", \"" +
-                        std::string(temp_file2.path) + "\")");
-    expect(temp_file2.path, script2.c_str(), kNoCause);
-
-    // Already renamed.
-    expect(temp_file2.path, script2.c_str(), kNoCause);
-
-    // Parents create successfully.
-    TemporaryFile temp_file3;
-    TemporaryDir td;
-    std::string temp_dir(td.path);
-    std::string dst_file = temp_dir + "/aaa/bbb/a.txt";
-    std::string script3("rename(\"" + std::string(temp_file3.path) + "\", \"" + dst_file + "\")");
-    expect(dst_file.c_str(), script3.c_str(), kNoCause);
-
-    // Clean up the temp files under td.
-    ASSERT_EQ(0, unlink(dst_file.c_str()));
-    ASSERT_EQ(0, rmdir((temp_dir + "/aaa/bbb").c_str()));
-    ASSERT_EQ(0, rmdir((temp_dir + "/aaa").c_str()));
-}
-
-TEST_F(UpdaterTest, symlink) {
-    // symlink expects 1+ argument.
-    expect(nullptr, "symlink()", kArgsParsingFailure);
-
-    // symlink should fail if src is an empty string.
-    TemporaryFile temp_file1;
-    std::string script1("symlink(\"" + std::string(temp_file1.path) + "\", \"\")");
-    expect(nullptr, script1.c_str(), kSymlinkFailure);
-
-    std::string script2("symlink(\"" + std::string(temp_file1.path) + "\", \"src1\", \"\")");
-    expect(nullptr, script2.c_str(), kSymlinkFailure);
-
-    // symlink failed to remove old src.
-    std::string script3("symlink(\"" + std::string(temp_file1.path) + "\", \"/proc\")");
-    expect(nullptr, script3.c_str(), kSymlinkFailure);
-
-    // symlink can create symlinks.
-    TemporaryFile temp_file;
-    std::string content = "magicvalue";
-    ASSERT_TRUE(android::base::WriteStringToFile(content, temp_file.path));
-
-    TemporaryDir td;
-    std::string src1 = std::string(td.path) + "/symlink1";
-    std::string src2 = std::string(td.path) + "/symlink2";
-    std::string script4("symlink(\"" + std::string(temp_file.path) + "\", \"" +
-                        src1 + "\", \"" + src2 + "\")");
-    expect("t", script4.c_str(), kNoCause);
-
-    // Verify the created symlinks.
-    struct stat sb;
-    ASSERT_TRUE(lstat(src1.c_str(), &sb) == 0 && S_ISLNK(sb.st_mode));
-    ASSERT_TRUE(lstat(src2.c_str(), &sb) == 0 && S_ISLNK(sb.st_mode));
-
-    // Clean up the leftovers.
-    ASSERT_EQ(0, unlink(src1.c_str()));
-    ASSERT_EQ(0, unlink(src2.c_str()));
 }
 
 TEST_F(UpdaterTest, package_extract_dir) {
@@ -559,4 +459,101 @@ TEST_F(UpdaterTest, show_progress) {
   ASSERT_EQ(android::base::StringPrintf("progress %f %d\n", .52, 10), cmd);
   // recovery-updater protocol expects 3 tokens ("progress <frac> <secs>").
   ASSERT_EQ(3U, android::base::Split(cmd, " ").size());
+}
+
+TEST_F(UpdaterTest, block_image_update) {
+  // Create a zip file with new_data and patch_data.
+  TemporaryFile zip_file;
+  FILE* zip_file_ptr = fdopen(zip_file.fd, "wb");
+  ZipWriter zip_writer(zip_file_ptr);
+
+  // Add a dummy new data.
+  ASSERT_EQ(0, zip_writer.StartEntry("new_data", 0));
+  ASSERT_EQ(0, zip_writer.FinishEntry());
+
+  // Generate and add the patch data.
+  std::string src_content = std::string(4096, 'a') + std::string(4096, 'c');
+  std::string tgt_content = std::string(4096, 'b') + std::string(4096, 'd');
+  TemporaryFile patch_file;
+  ASSERT_EQ(0, bsdiff::bsdiff(reinterpret_cast<const uint8_t*>(src_content.data()),
+      src_content.size(), reinterpret_cast<const uint8_t*>(tgt_content.data()),
+      tgt_content.size(), patch_file.path, nullptr));
+  std::string patch_content;
+  ASSERT_TRUE(android::base::ReadFileToString(patch_file.path, &patch_content));
+  ASSERT_EQ(0, zip_writer.StartEntry("patch_data", 0));
+  ASSERT_EQ(0, zip_writer.WriteBytes(patch_content.data(), patch_content.size()));
+  ASSERT_EQ(0, zip_writer.FinishEntry());
+
+  // Add two transfer lists. The first one contains a bsdiff; and we expect the update to succeed.
+  std::string src_hash = get_sha1(src_content);
+  std::string tgt_hash = get_sha1(tgt_content);
+  std::vector<std::string> transfer_list = {
+    "4",
+    "2",
+    "0",
+    "2",
+    "stash " + src_hash + " 2,0,2",
+    android::base::StringPrintf("bsdiff 0 %zu %s %s 2,0,2 2 - %s:2,0,2", patch_content.size(),
+                                src_hash.c_str(), tgt_hash.c_str(), src_hash.c_str()),
+    "free " + src_hash,
+  };
+  ASSERT_EQ(0, zip_writer.StartEntry("transfer_list", 0));
+  std::string commands = android::base::Join(transfer_list, '\n');
+  ASSERT_EQ(0, zip_writer.WriteBytes(commands.data(), commands.size()));
+  ASSERT_EQ(0, zip_writer.FinishEntry());
+
+  // Stash and free some blocks, then fail the 2nd update intentionally.
+  std::vector<std::string> fail_transfer_list = {
+    "4",
+    "2",
+    "0",
+    "2",
+    "stash " + tgt_hash + " 2,0,2",
+    "free " + tgt_hash,
+    "fail",
+  };
+  ASSERT_EQ(0, zip_writer.StartEntry("fail_transfer_list", 0));
+  std::string fail_commands = android::base::Join(fail_transfer_list, '\n');
+  ASSERT_EQ(0, zip_writer.WriteBytes(fail_commands.data(), fail_commands.size()));
+  ASSERT_EQ(0, zip_writer.FinishEntry());
+  ASSERT_EQ(0, zip_writer.Finish());
+  ASSERT_EQ(0, fclose(zip_file_ptr));
+
+  MemMapping map;
+  ASSERT_EQ(0, sysMapFile(zip_file.path, &map));
+  ZipArchiveHandle handle;
+  ASSERT_EQ(0, OpenArchiveFromMemory(map.addr, map.length, zip_file.path, &handle));
+
+  // Set up the handler, command_pipe, patch offset & length.
+  UpdaterInfo updater_info;
+  updater_info.package_zip = handle;
+  TemporaryFile temp_pipe;
+  updater_info.cmd_pipe = fopen(temp_pipe.path, "wb");
+  updater_info.package_zip_addr = map.addr;
+  updater_info.package_zip_len = map.length;
+
+  // Execute the commands in the 1st transfer list.
+  TemporaryFile update_file;
+  ASSERT_TRUE(android::base::WriteStringToFile(src_content, update_file.path));
+  std::string script = "block_image_update(\"" + std::string(update_file.path) +
+      R"(", package_extract_file("transfer_list"), "new_data", "patch_data"))";
+  expect("t", script.c_str(), kNoCause, &updater_info);
+  // The update_file should be patched correctly.
+  std::string updated_content;
+  ASSERT_TRUE(android::base::ReadFileToString(update_file.path, &updated_content));
+  ASSERT_EQ(tgt_hash, get_sha1(updated_content));
+
+  // Expect the 2nd update to fail, but expect the stashed blocks to be freed.
+  script = "block_image_update(\"" + std::string(update_file.path) +
+      R"(", package_extract_file("fail_transfer_list"), "new_data", "patch_data"))";
+  expect("", script.c_str(), kNoCause, &updater_info);
+  // Updater generates the stash name based on the input file name.
+  std::string name_digest = get_sha1(update_file.path);
+  std::string stash_base = "/cache/recovery/" + name_digest;
+  ASSERT_EQ(0, access(stash_base.c_str(), F_OK));
+  ASSERT_EQ(-1, access((stash_base + tgt_hash).c_str(), F_OK));
+  ASSERT_EQ(0, rmdir(stash_base.c_str()));
+
+  ASSERT_EQ(0, fclose(updater_info.cmd_pipe));
+  CloseArchive(handle);
 }
