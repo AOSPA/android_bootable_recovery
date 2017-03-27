@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -46,7 +47,7 @@ struct selabel_handle *sehandle = nullptr;
 
 static void expect(const char* expected, const char* expr_str, CauseCode cause_code,
                    UpdaterInfo* info = nullptr) {
-  Expr* e;
+  std::unique_ptr<Expr> e;
   int error_count = 0;
   ASSERT_EQ(0, parse_string(expr_str, &e, &error_count));
   ASSERT_EQ(0, error_count);
@@ -124,6 +125,55 @@ TEST_F(UpdaterTest, sha1_check) {
 
     // sha1_check() expects at least one argument.
     expect(nullptr, "sha1_check()", kArgsParsingFailure);
+}
+
+TEST_F(UpdaterTest, apply_patch_check) {
+  // Zero-argument is not valid.
+  expect(nullptr, "apply_patch_check()", kArgsParsingFailure);
+
+  // File not found.
+  expect("", "apply_patch_check(\"/doesntexist\")", kNoCause);
+
+  std::string src_file = from_testdata_base("old.file");
+  std::string src_content;
+  ASSERT_TRUE(android::base::ReadFileToString(src_file, &src_content));
+  size_t src_size = src_content.size();
+  std::string src_hash = get_sha1(src_content);
+
+  // One-argument with EMMC:file:size:sha1 should pass the check.
+  std::string filename = android::base::Join(
+      std::vector<std::string>{ "EMMC", src_file, std::to_string(src_size), src_hash }, ":");
+  std::string cmd = "apply_patch_check(\"" + filename + "\")";
+  expect("t", cmd.c_str(), kNoCause);
+
+  // EMMC:file:(size-1):sha1:(size+1):sha1 should fail the check.
+  std::string filename_bad = android::base::Join(
+      std::vector<std::string>{ "EMMC", src_file, std::to_string(src_size - 1), src_hash,
+                                std::to_string(src_size + 1), src_hash },
+      ":");
+  cmd = "apply_patch_check(\"" + filename_bad + "\")";
+  expect("", cmd.c_str(), kNoCause);
+
+  // EMMC:file:(size-1):sha1:size:sha1:(size+1):sha1 should pass the check.
+  filename_bad =
+      android::base::Join(std::vector<std::string>{ "EMMC", src_file, std::to_string(src_size - 1),
+                                                    src_hash, std::to_string(src_size), src_hash,
+                                                    std::to_string(src_size + 1), src_hash },
+                          ":");
+  cmd = "apply_patch_check(\"" + filename_bad + "\")";
+  expect("t", cmd.c_str(), kNoCause);
+
+  // Multiple arguments.
+  cmd = "apply_patch_check(\"" + filename + "\", \"wrong_sha1\", \"wrong_sha2\")";
+  expect("", cmd.c_str(), kNoCause);
+
+  cmd = "apply_patch_check(\"" + filename + "\", \"wrong_sha1\", \"" + src_hash +
+        "\", \"wrong_sha2\")";
+  expect("t", cmd.c_str(), kNoCause);
+
+  cmd = "apply_patch_check(\"" + filename_bad + "\", \"wrong_sha1\", \"" + src_hash +
+        "\", \"wrong_sha2\")";
+  expect("t", cmd.c_str(), kNoCause);
 }
 
 TEST_F(UpdaterTest, file_getprop) {
