@@ -53,6 +53,7 @@
 #include <cutils/properties.h> /* for property_list */
 #include <healthd/BatteryMonitor.h>
 #include <private/android_logger.h> /* private pmsg functions */
+#include <private/android_filesystem_config.h>  /* for AID_SYSTEM */
 #include <selinux/label.h>
 #include <selinux/selinux.h>
 #include <ziparchive/zip_archive.h>
@@ -121,7 +122,7 @@ static const int BATTERY_READ_TIMEOUT_IN_SEC = 10;
 static const int BATTERY_OK_PERCENTAGE = 20;
 static const int BATTERY_WITH_CHARGER_OK_PERCENTAGE = 15;
 static constexpr const char* RECOVERY_WIPE = "/etc/recovery.wipe";
-static constexpr const char* DEFAULT_LOCALE = "en_US";
+static constexpr const char* DEFAULT_LOCALE = "en-US";
 
 static std::string locale;
 static bool has_cache = false;
@@ -460,9 +461,9 @@ static void copy_logs() {
     copy_log_file(TEMPORARY_INSTALL_FILE, LAST_INSTALL_FILE, false);
     save_kernel_log(LAST_KMSG_FILE);
     chmod(LOG_FILE, 0600);
-    chown(LOG_FILE, 1000, 1000);   // system user
+    chown(LOG_FILE, AID_SYSTEM, AID_SYSTEM);
     chmod(LAST_KMSG_FILE, 0600);
-    chown(LAST_KMSG_FILE, 1000, 1000);   // system user
+    chown(LAST_KMSG_FILE, AID_SYSTEM, AID_SYSTEM);
     chmod(LAST_LOG_FILE, 0640);
     chmod(LAST_INSTALL_FILE, 0644);
     sync();
@@ -751,13 +752,15 @@ static bool wipe_data(Device* device) {
 
 static bool prompt_and_wipe_data(Device* device) {
   const char* const headers[] = {
-    "Boot halted, user data is corrupt",
-    "Wipe all user data to recover",
+    "Can't load Android system. Your data may be corrupt.",
+    "If you continue to get this message, you may need to",
+    "perform a factory data reset and erase all user data",
+    "stored on this device.",
     NULL
   };
   const char* const items[] = {
-    "Retry boot",
-    "Wipe user data",
+    "Try again",
+    "Factory data reset",
     NULL
   };
   for (;;) {
@@ -790,47 +793,45 @@ static bool wipe_cache(bool should_confirm, Device* device) {
     return success;
 }
 
-// Secure-wipe a given partition. It uses BLKSECDISCARD, if supported.
-// Otherwise, it goes with BLKDISCARD (if device supports BLKDISCARDZEROES) or
-// BLKZEROOUT.
+// Secure-wipe a given partition. It uses BLKSECDISCARD, if supported. Otherwise, it goes with
+// BLKDISCARD (if device supports BLKDISCARDZEROES) or BLKZEROOUT.
 static bool secure_wipe_partition(const std::string& partition) {
-    android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(partition.c_str(), O_WRONLY)));
-    if (fd == -1) {
-        PLOG(ERROR) << "failed to open \"" << partition << "\"";
+  android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(partition.c_str(), O_WRONLY)));
+  if (fd == -1) {
+    PLOG(ERROR) << "Failed to open \"" << partition << "\"";
+    return false;
+  }
+
+  uint64_t range[2] = { 0, 0 };
+  if (ioctl(fd, BLKGETSIZE64, &range[1]) == -1 || range[1] == 0) {
+    PLOG(ERROR) << "Failed to get partition size";
+    return false;
+  }
+  LOG(INFO) << "Secure-wiping \"" << partition << "\" from " << range[0] << " to " << range[1];
+
+  LOG(INFO) << "  Trying BLKSECDISCARD...";
+  if (ioctl(fd, BLKSECDISCARD, &range) == -1) {
+    PLOG(WARNING) << "  Failed";
+
+    // Use BLKDISCARD if it zeroes out blocks, otherwise use BLKZEROOUT.
+    unsigned int zeroes;
+    if (ioctl(fd, BLKDISCARDZEROES, &zeroes) == 0 && zeroes != 0) {
+      LOG(INFO) << "  Trying BLKDISCARD...";
+      if (ioctl(fd, BLKDISCARD, &range) == -1) {
+        PLOG(ERROR) << "  Failed";
         return false;
-    }
-
-    uint64_t range[2] = {0, 0};
-    if (ioctl(fd, BLKGETSIZE64, &range[1]) == -1 || range[1] == 0) {
-        PLOG(ERROR) << "failed to get partition size";
+      }
+    } else {
+      LOG(INFO) << "  Trying BLKZEROOUT...";
+      if (ioctl(fd, BLKZEROOUT, &range) == -1) {
+        PLOG(ERROR) << "  Failed";
         return false;
+      }
     }
-    printf("Secure-wiping \"%s\" from %" PRIu64 " to %" PRIu64 ".\n",
-           partition.c_str(), range[0], range[1]);
+  }
 
-    printf("Trying BLKSECDISCARD...\t");
-    if (ioctl(fd, BLKSECDISCARD, &range) == -1) {
-        printf("failed: %s\n", strerror(errno));
-
-        // Use BLKDISCARD if it zeroes out blocks, otherwise use BLKZEROOUT.
-        unsigned int zeroes;
-        if (ioctl(fd, BLKDISCARDZEROES, &zeroes) == 0 && zeroes != 0) {
-            printf("Trying BLKDISCARD...\t");
-            if (ioctl(fd, BLKDISCARD, &range) == -1) {
-                printf("failed: %s\n", strerror(errno));
-                return false;
-            }
-        } else {
-            printf("Trying BLKZEROOUT...\t");
-            if (ioctl(fd, BLKZEROOUT, &range) == -1) {
-                printf("failed: %s\n", strerror(errno));
-                return false;
-            }
-        }
-    }
-
-    printf("done\n");
-    return true;
+  LOG(INFO) << "  Done";
+  return true;
 }
 
 // Check if the wipe package matches expectation:
@@ -862,7 +863,7 @@ static bool check_wipe_package(size_t wipe_package_size) {
         return false;
     }
     std::string metadata;
-    if (!read_metadata_from_package(&zip, &metadata)) {
+    if (!read_metadata_from_package(zip, &metadata)) {
         CloseArchive(zip);
         return false;
     }
