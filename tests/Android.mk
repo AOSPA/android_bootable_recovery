@@ -86,6 +86,11 @@ LOCAL_CFLAGS := \
     -D_FILE_OFFSET_BITS=64
 
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+
+ifeq ($(AB_OTA_UPDATER),true)
+LOCAL_CFLAGS += -DAB_OTA_UPDATER=1
+endif
+
 LOCAL_MODULE := recovery_component_test
 LOCAL_C_INCLUDES := bootable/recovery
 LOCAL_SRC_FILES := \
@@ -93,6 +98,7 @@ LOCAL_SRC_FILES := \
     component/bootloader_message_test.cpp \
     component/edify_test.cpp \
     component/imgdiff_test.cpp \
+    component/install_test.cpp \
     component/sideload_test.cpp \
     component/uncrypt_test.cpp \
     component/updater_test.cpp \
@@ -117,6 +123,7 @@ LOCAL_STATIC_LIBRARIES := \
     libbsdiff \
     libbspatch \
     libotafault \
+    librecovery \
     libupdater \
     libbootloader_message \
     libverifier \
@@ -126,12 +133,14 @@ LOCAL_STATIC_LIBRARIES := \
     libdivsufsort64 \
     libfs_mgr \
     liblog \
+    libvintf_recovery \
+    libvintf \
+    libtinyxml2 \
     libselinux \
     libext4_utils \
     libsparse \
     libcrypto_utils \
     libcrypto \
-    libcutils \
     libbz \
     libziparchive \
     libutils \

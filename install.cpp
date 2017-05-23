@@ -44,6 +44,7 @@
 #include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
+#include <vintf/VintfObjectRecovery.h>
 #include <ziparchive/zip_archive.h>
 
 #include "common.h"
@@ -57,9 +58,6 @@
 
 using namespace std::chrono_literals;
 
-#define ASSUMED_UPDATE_BINARY_NAME  "META-INF/com/google/android/update-binary"
-static constexpr const char* AB_OTA_PAYLOAD_PROPERTIES = "payload_properties.txt";
-static constexpr const char* AB_OTA_PAYLOAD = "payload.bin";
 #define PUBLIC_KEYS_FILE "/res/keys"
 static constexpr const char* METADATA_PATH = "META-INF/com/android/metadata";
 static constexpr const char* UNCRYPT_STATUS = "/cache/recovery/uncrypt_status";
@@ -136,13 +134,11 @@ static void read_source_target_build(ZipArchiveHandle zip, std::vector<std::stri
     }
 }
 
-// Extract the update binary from the open zip archive |zip| located at |path|
-// and store into |cmd| the command line that should be called. The |status_fd|
-// is the file descriptor the child process should use to report back the
-// progress of the update.
-static int
-update_binary_command(const char* path, ZipArchiveHandle zip, int retry_count,
-                      int status_fd, std::vector<std::string>* cmd);
+// Extract the update binary from the open zip archive |zip| located at |path| and store into |cmd|
+// the command line that should be called. The |status_fd| is the file descriptor the child process
+// should use to report back the progress of the update.
+int update_binary_command(const std::string& path, ZipArchiveHandle zip, int retry_count,
+                          int status_fd, std::vector<std::string>* cmd);
 
 #ifdef AB_OTA_UPDATER
 
@@ -224,87 +220,90 @@ static int check_newer_ab_build(ZipArchiveHandle zip) {
   return 0;
 }
 
-static int
-update_binary_command(const char* path, ZipArchiveHandle zip, int retry_count,
-                      int status_fd, std::vector<std::string>* cmd)
-{
-    int ret = check_newer_ab_build(zip);
-    if (ret) {
-        return ret;
-    }
+int update_binary_command(const std::string& path, ZipArchiveHandle zip, int retry_count,
+                          int status_fd, std::vector<std::string>* cmd) {
+  CHECK(cmd != nullptr);
+  int ret = check_newer_ab_build(zip);
+  if (ret != 0) {
+    return ret;
+  }
 
-    // For A/B updates we extract the payload properties to a buffer and obtain
-    // the RAW payload offset in the zip file.
-    ZipString property_name(AB_OTA_PAYLOAD_PROPERTIES);
-    ZipEntry properties_entry;
-    if (FindEntry(zip, property_name, &properties_entry) != 0) {
-        LOG(ERROR) << "Can't find " << AB_OTA_PAYLOAD_PROPERTIES;
-        return INSTALL_CORRUPT;
-    }
-    std::vector<uint8_t> payload_properties(
-            properties_entry.uncompressed_length);
-    if (ExtractToMemory(zip, &properties_entry, payload_properties.data(),
-                        properties_entry.uncompressed_length) != 0) {
-        LOG(ERROR) << "Can't extract " << AB_OTA_PAYLOAD_PROPERTIES;
-        return INSTALL_CORRUPT;
-    }
+  // For A/B updates we extract the payload properties to a buffer and obtain the RAW payload offset
+  // in the zip file.
+  static constexpr const char* AB_OTA_PAYLOAD_PROPERTIES = "payload_properties.txt";
+  ZipString property_name(AB_OTA_PAYLOAD_PROPERTIES);
+  ZipEntry properties_entry;
+  if (FindEntry(zip, property_name, &properties_entry) != 0) {
+    LOG(ERROR) << "Failed to find " << AB_OTA_PAYLOAD_PROPERTIES;
+    return INSTALL_CORRUPT;
+  }
+  uint32_t properties_entry_length = properties_entry.uncompressed_length;
+  std::vector<uint8_t> payload_properties(properties_entry_length);
+  int32_t err =
+      ExtractToMemory(zip, &properties_entry, payload_properties.data(), properties_entry_length);
+  if (err != 0) {
+    LOG(ERROR) << "Failed to extract " << AB_OTA_PAYLOAD_PROPERTIES << ": " << ErrorCodeString(err);
+    return INSTALL_CORRUPT;
+  }
 
-    ZipString payload_name(AB_OTA_PAYLOAD);
-    ZipEntry payload_entry;
-    if (FindEntry(zip, payload_name, &payload_entry) != 0) {
-        LOG(ERROR) << "Can't find " << AB_OTA_PAYLOAD;
-        return INSTALL_CORRUPT;
-    }
-    long payload_offset = payload_entry.offset;
-    *cmd = {
-        "/sbin/update_engine_sideload",
-        android::base::StringPrintf("--payload=file://%s", path),
-        android::base::StringPrintf("--offset=%ld", payload_offset),
-        "--headers=" + std::string(payload_properties.begin(),
-                                   payload_properties.end()),
-        android::base::StringPrintf("--status_fd=%d", status_fd),
-    };
-    return 0;
+  static constexpr const char* AB_OTA_PAYLOAD = "payload.bin";
+  ZipString payload_name(AB_OTA_PAYLOAD);
+  ZipEntry payload_entry;
+  if (FindEntry(zip, payload_name, &payload_entry) != 0) {
+    LOG(ERROR) << "Failed to find " << AB_OTA_PAYLOAD;
+    return INSTALL_CORRUPT;
+  }
+  long payload_offset = payload_entry.offset;
+  *cmd = {
+    "/sbin/update_engine_sideload",
+    "--payload=file://" + path,
+    android::base::StringPrintf("--offset=%ld", payload_offset),
+    "--headers=" + std::string(payload_properties.begin(), payload_properties.end()),
+    android::base::StringPrintf("--status_fd=%d", status_fd),
+  };
+  return 0;
 }
 
 #else  // !AB_OTA_UPDATER
 
-static int
-update_binary_command(const char* path, ZipArchiveHandle zip, int retry_count,
-                      int status_fd, std::vector<std::string>* cmd)
-{
-    // On traditional updates we extract the update binary from the package.
-    ZipString binary_name(ASSUMED_UPDATE_BINARY_NAME);
-    ZipEntry binary_entry;
-    if (FindEntry(zip, binary_name, &binary_entry) != 0) {
-        return INSTALL_CORRUPT;
-    }
+int update_binary_command(const std::string& path, ZipArchiveHandle zip, int retry_count,
+                          int status_fd, std::vector<std::string>* cmd) {
+  CHECK(cmd != nullptr);
 
-    const char* binary = "/tmp/update_binary";
-    unlink(binary);
-    int fd = creat(binary, 0755);
-    if (fd < 0) {
-        PLOG(ERROR) << "Can't make " << binary;
-        return INSTALL_ERROR;
-    }
-    int error = ExtractEntryToFile(zip, &binary_entry, fd);
-    close(fd);
+  // On traditional updates we extract the update binary from the package.
+  static constexpr const char* UPDATE_BINARY_NAME = "META-INF/com/google/android/update-binary";
+  ZipString binary_name(UPDATE_BINARY_NAME);
+  ZipEntry binary_entry;
+  if (FindEntry(zip, binary_name, &binary_entry) != 0) {
+    LOG(ERROR) << "Failed to find update binary " << UPDATE_BINARY_NAME;
+    return INSTALL_CORRUPT;
+  }
 
-    if (error != 0) {
-        LOG(ERROR) << "Can't copy " << ASSUMED_UPDATE_BINARY_NAME
-                   << " : " << ErrorCodeString(error);
-        return INSTALL_ERROR;
-    }
+  const char* binary = "/tmp/update_binary";
+  unlink(binary);
+  int fd = creat(binary, 0755);
+  if (fd == -1) {
+    PLOG(ERROR) << "Failed to create " << binary;
+    return INSTALL_ERROR;
+  }
 
-    *cmd = {
-        binary,
-        EXPAND(RECOVERY_API_VERSION),   // defined in Android.mk
-        std::to_string(status_fd),
-        path,
-    };
-    if (retry_count > 0)
-        cmd->push_back("retry");
-    return 0;
+  int32_t error = ExtractEntryToFile(zip, &binary_entry, fd);
+  close(fd);
+  if (error != 0) {
+    LOG(ERROR) << "Failed to extract " << UPDATE_BINARY_NAME << ": " << ErrorCodeString(error);
+    return INSTALL_ERROR;
+  }
+
+  *cmd = {
+    binary,
+    EXPAND(RECOVERY_API_VERSION),  // defined in Android.mk
+    std::to_string(status_fd),
+    path,
+  };
+  if (retry_count > 0) {
+    cmd->push_back("retry");
+  }
+  return 0;
 }
 #endif  // !AB_OTA_UPDATER
 
@@ -489,6 +488,74 @@ static int try_update_binary(const char* path, ZipArchiveHandle zip, bool* wipe_
   return INSTALL_SUCCESS;
 }
 
+// Verifes the compatibility info in a Treble-compatible package. Returns true directly if the
+// entry doesn't exist. Note that the compatibility info is packed in a zip file inside the OTA
+// package.
+bool verify_package_compatibility(ZipArchiveHandle package_zip) {
+  LOG(INFO) << "Verifying package compatibility...";
+
+  static constexpr const char* COMPATIBILITY_ZIP_ENTRY = "compatibility.zip";
+  ZipString compatibility_entry_name(COMPATIBILITY_ZIP_ENTRY);
+  ZipEntry compatibility_entry;
+  if (FindEntry(package_zip, compatibility_entry_name, &compatibility_entry) != 0) {
+    LOG(INFO) << "Package doesn't contain " << COMPATIBILITY_ZIP_ENTRY << " entry";
+    return true;
+  }
+
+  std::string zip_content(compatibility_entry.uncompressed_length, '\0');
+  int32_t ret;
+  if ((ret = ExtractToMemory(package_zip, &compatibility_entry,
+                             reinterpret_cast<uint8_t*>(&zip_content[0]),
+                             compatibility_entry.uncompressed_length)) != 0) {
+    LOG(ERROR) << "Failed to read " << COMPATIBILITY_ZIP_ENTRY << ": " << ErrorCodeString(ret);
+    return false;
+  }
+
+  ZipArchiveHandle zip_handle;
+  ret = OpenArchiveFromMemory(static_cast<void*>(const_cast<char*>(zip_content.data())),
+                              zip_content.size(), COMPATIBILITY_ZIP_ENTRY, &zip_handle);
+  if (ret != 0) {
+    LOG(ERROR) << "Failed to OpenArchiveFromMemory: " << ErrorCodeString(ret);
+    return false;
+  }
+
+  // Iterate all the entries inside COMPATIBILITY_ZIP_ENTRY and read the contents.
+  void* cookie;
+  ret = StartIteration(zip_handle, &cookie, nullptr, nullptr);
+  if (ret != 0) {
+    LOG(ERROR) << "Failed to start iterating zip entries: " << ErrorCodeString(ret);
+    CloseArchive(zip_handle);
+    return false;
+  }
+  std::unique_ptr<void, decltype(&EndIteration)> guard(cookie, EndIteration);
+
+  std::vector<std::string> compatibility_info;
+  ZipEntry info_entry;
+  ZipString info_name;
+  while (Next(cookie, &info_entry, &info_name) == 0) {
+    std::string content(info_entry.uncompressed_length, '\0');
+    int32_t ret = ExtractToMemory(zip_handle, &info_entry, reinterpret_cast<uint8_t*>(&content[0]),
+                                  info_entry.uncompressed_length);
+    if (ret != 0) {
+      LOG(ERROR) << "Failed to read " << info_name.name << ": " << ErrorCodeString(ret);
+      CloseArchive(zip_handle);
+      return false;
+    }
+    compatibility_info.emplace_back(std::move(content));
+  }
+  CloseArchive(zip_handle);
+
+  // VintfObjectRecovery::CheckCompatibility returns zero on success.
+  std::string err;
+  int result = android::vintf::VintfObjectRecovery::CheckCompatibility(compatibility_info, &err);
+  if (result == 0) {
+    return true;
+  }
+
+  LOG(ERROR) << "Failed to verify package compatibility (result " << result << "): " << err;
+  return false;
+}
+
 static int
 really_install_package(const char *path, bool* wipe_cache, bool needs_mount,
                        std::vector<std::string>& log_buffer, int retry_count, int* max_temperature)
@@ -534,6 +601,14 @@ really_install_package(const char *path, bool* wipe_cache, bool needs_mount,
         sysReleaseMap(&map);
         CloseArchive(zip);
         return INSTALL_CORRUPT;
+    }
+
+    // Additionally verify the compatibility of the package.
+    if (!verify_package_compatibility(zip)) {
+      log_buffer.push_back(android::base::StringPrintf("error: %d", kPackageCompatibilityFailure));
+      sysReleaseMap(&map);
+      CloseArchive(zip);
+      return INSTALL_CORRUPT;
     }
 
     // Verify and install the contents of the package.
