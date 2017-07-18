@@ -40,7 +40,6 @@
 #include <string>
 #include <vector>
 
-#include <adb.h>
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/parseint.h>
@@ -114,8 +113,9 @@ static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
 static const char *TEMPORARY_INSTALL_FILE = "/tmp/last_install";
 static const char *LAST_KMSG_FILE = "/cache/recovery/last_kmsg";
 static const char *LAST_LOG_FILE = "/cache/recovery/last_log";
-// We will try to apply the update package 5 times at most in case of an I/O error.
-static const int EIO_RETRY_COUNT = 4;
+// We will try to apply the update package 5 times at most in case of an I/O error or
+// bspatch | imgpatch error.
+static const int RETRY_LIMIT = 4;
 static const int BATTERY_READ_TIMEOUT_IN_SEC = 10;
 // GmsCore enters recovery mode to install package when having enough battery
 // percentage. Normally, the threshold is 40% without charger and 20% with charger.
@@ -1157,7 +1157,7 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
         {
           bool adb = (chosen_action == Device::APPLY_ADB_SIDELOAD);
           if (adb) {
-            status = apply_from_adb(ui, &should_wipe_cache, TEMPORARY_INSTALL_FILE);
+            status = apply_from_adb(&should_wipe_cache, TEMPORARY_INSTALL_FILE);
           } else {
             status = apply_from_sdcard(device, &should_wipe_cache);
           }
@@ -1528,9 +1528,9 @@ int main(int argc, char **argv) {
             }
             if (status != INSTALL_SUCCESS) {
                 ui->Print("Installation aborted.\n");
-                // When I/O error happens, reboot and retry installation EIO_RETRY_COUNT
+                // When I/O error happens, reboot and retry installation RETRY_LIMIT
                 // times before we abandon this OTA update.
-                if (status == INSTALL_RETRY && retry_count < EIO_RETRY_COUNT) {
+                if (status == INSTALL_RETRY && retry_count < RETRY_LIMIT) {
                     copy_logs();
                     set_retry_bootloader_message(retry_count, args);
                     // Print retry count on screen.
@@ -1582,7 +1582,7 @@ int main(int argc, char **argv) {
         if (!sideload_auto_reboot) {
             ui->ShowText(true);
         }
-        status = apply_from_adb(ui, &should_wipe_cache, TEMPORARY_INSTALL_FILE);
+        status = apply_from_adb(&should_wipe_cache, TEMPORARY_INSTALL_FILE);
         if (status == INSTALL_SUCCESS && should_wipe_cache) {
             if (!wipe_cache(false, device)) {
                 status = INSTALL_ERROR;
@@ -1604,14 +1604,22 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (!sideload_auto_reboot && (status == INSTALL_ERROR || status == INSTALL_CORRUPT)) {
-        copy_logs();
+    if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
         ui->SetBackground(RecoveryUI::ERROR);
+        if (!ui->IsTextVisible()) {
+            sleep(5);
+        }
     }
 
     Device::BuiltinAction after = shutdown_after ? Device::SHUTDOWN : Device::REBOOT;
-    if ((status != INSTALL_SUCCESS && status != INSTALL_SKIPPED && !sideload_auto_reboot) ||
-            ui->IsTextVisible()) {
+    // 1. If the recovery menu is visible, prompt and wait for commands.
+    // 2. If the state is INSTALL_NONE, wait for commands. (i.e. In user build, manually reboot into
+    //    recovery to sideload a package.)
+    // 3. sideload_auto_reboot is an option only available in user-debug build, reboot the device
+    //    without waiting.
+    // 4. In all other cases, reboot the device. Therefore, normal users will observe the device
+    //    reboot after it shows the "error" screen for 5s.
+    if ((status == INSTALL_NONE && !sideload_auto_reboot) || ui->IsTextVisible()) {
         Device::BuiltinAction temp = prompt_and_wait(device, status);
         if (temp != Device::NO_ACTION) {
             after = temp;
