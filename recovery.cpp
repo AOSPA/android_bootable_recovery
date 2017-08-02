@@ -250,7 +250,7 @@ static void redirect_stdio(const char* filename) {
         auto start = std::chrono::steady_clock::now();
 
         // Child logger to actually write to the log file.
-        FILE* log_fp = fopen(filename, "a");
+        FILE* log_fp = fopen(filename, "ae");
         if (log_fp == nullptr) {
             PLOG(ERROR) << "fopen \"" << filename << "\" failed";
             close(pipefd[0]);
@@ -419,27 +419,27 @@ static void copy_log_file_to_pmsg(const char* source, const char* destination) {
 static off_t tmplog_offset = 0;
 
 static void copy_log_file(const char* source, const char* destination, bool append) {
-    FILE* dest_fp = fopen_path(destination, append ? "a" : "w");
-    if (dest_fp == nullptr) {
-        PLOG(ERROR) << "Can't open " << destination;
-    } else {
-        FILE* source_fp = fopen(source, "r");
-        if (source_fp != nullptr) {
-            if (append) {
-                fseeko(source_fp, tmplog_offset, SEEK_SET);  // Since last write
-            }
-            char buf[4096];
-            size_t bytes;
-            while ((bytes = fread(buf, 1, sizeof(buf), source_fp)) != 0) {
-                fwrite(buf, 1, bytes, dest_fp);
-            }
-            if (append) {
-                tmplog_offset = ftello(source_fp);
-            }
-            check_and_fclose(source_fp, source);
-        }
-        check_and_fclose(dest_fp, destination);
+  FILE* dest_fp = fopen_path(destination, append ? "ae" : "we");
+  if (dest_fp == nullptr) {
+    PLOG(ERROR) << "Can't open " << destination;
+  } else {
+    FILE* source_fp = fopen(source, "re");
+    if (source_fp != nullptr) {
+      if (append) {
+        fseeko(source_fp, tmplog_offset, SEEK_SET);  // Since last write
+      }
+      char buf[4096];
+      size_t bytes;
+      while ((bytes = fread(buf, 1, sizeof(buf), source_fp)) != 0) {
+        fwrite(buf, 1, bytes, dest_fp);
+      }
+      if (append) {
+        tmplog_offset = ftello(source_fp);
+      }
+      check_and_fclose(source_fp, source);
     }
+    check_and_fclose(dest_fp, destination);
+  }
 }
 
 static void copy_logs() {
@@ -478,40 +478,38 @@ static void copy_logs() {
     sync();
 }
 
-// clear the recovery command and prepare to boot a (hopefully working) system,
+// Clear the recovery command and prepare to boot a (hopefully working) system,
 // copy our log file to cache as well (for the system to read). This function is
 // idempotent: call it as many times as you like.
 static void finish_recovery() {
-    // Save the locale to cache, so if recovery is next started up
-    // without a --locale argument (eg, directly from the bootloader)
-    // it will use the last-known locale.
-    if (!locale.empty() && has_cache) {
-        LOG(INFO) << "Saving locale \"" << locale << "\"";
-
-        FILE* fp = fopen_path(LOCALE_FILE, "w");
-        if (!android::base::WriteStringToFd(locale, fileno(fp))) {
-            PLOG(ERROR) << "Failed to save locale to " << LOCALE_FILE;
-        }
-        check_and_fclose(fp, LOCALE_FILE);
+  // Save the locale to cache, so if recovery is next started up without a '--locale' argument
+  // (e.g., directly from the bootloader) it will use the last-known locale.
+  if (!locale.empty() && has_cache) {
+    LOG(INFO) << "Saving locale \"" << locale << "\"";
+    if (ensure_path_mounted(LOCALE_FILE) != 0) {
+      LOG(ERROR) << "Failed to mount " << LOCALE_FILE;
+    } else if (!android::base::WriteStringToFile(locale, LOCALE_FILE)) {
+      PLOG(ERROR) << "Failed to save locale to " << LOCALE_FILE;
     }
+  }
 
-    copy_logs();
+  copy_logs();
 
-    // Reset to normal system boot so recovery won't cycle indefinitely.
-    std::string err;
-    if (!clear_bootloader_message(&err)) {
-        LOG(ERROR) << "Failed to clear BCB message: " << err;
+  // Reset to normal system boot so recovery won't cycle indefinitely.
+  std::string err;
+  if (!clear_bootloader_message(&err)) {
+    LOG(ERROR) << "Failed to clear BCB message: " << err;
+  }
+
+  // Remove the command file, so recovery won't repeat indefinitely.
+  if (has_cache) {
+    if (ensure_path_mounted(COMMAND_FILE) != 0 || (unlink(COMMAND_FILE) && errno != ENOENT)) {
+      LOG(WARNING) << "Can't unlink " << COMMAND_FILE;
     }
+    ensure_path_unmounted(CACHE_ROOT);
+  }
 
-    // Remove the command file, so recovery won't repeat indefinitely.
-    if (has_cache) {
-        if (ensure_path_mounted(COMMAND_FILE) != 0 || (unlink(COMMAND_FILE) && errno != ENOENT)) {
-            LOG(WARNING) << "Can't unlink " << COMMAND_FILE;
-        }
-        ensure_path_unmounted(CACHE_ROOT);
-    }
-
-    sync();  // For good measure.
+  sync();  // For good measure.
 }
 
 struct saved_log_file {
@@ -552,7 +550,7 @@ static bool erase_volume(const char* volume) {
             }
 
             std::string data(sb.st_size, '\0');
-            FILE* f = fopen(path.c_str(), "rb");
+            FILE* f = fopen(path.c_str(), "rbe");
             fread(&data[0], 1, data.size(), f);
             fclose(f);
 
@@ -580,7 +578,7 @@ static bool erase_volume(const char* volume) {
       ui->Print("Failed to make convert_fbe dir %s\n", strerror(errno));
       return true;
     }
-    FILE* f = fopen(CONVERT_FBE_FILE, "wb");
+    FILE* f = fopen(CONVERT_FBE_FILE, "wbe");
     if (!f) {
       ui->Print("Failed to convert to file encryption %s\n", strerror(errno));
       return true;
@@ -1593,15 +1591,14 @@ int main(int argc, char **argv) {
             ui->Print("Rebooting automatically.\n");
         }
     } else if (!just_exit) {
-        status = INSTALL_NONE;  // No command specified
-        ui->SetBackground(RecoveryUI::NO_COMMAND);
-
-        // http://b/17489952
-        // If this is an eng or userdebug build, automatically turn on the
-        // text display if no command is specified.
-        if (is_ro_debuggable()) {
-            ui->ShowText(true);
-        }
+      // If this is an eng or userdebug build, automatically turn on the text display if no command
+      // is specified. Note that this should be called before setting the background to avoid
+      // flickering the background image.
+      if (is_ro_debuggable()) {
+        ui->ShowText(true);
+      }
+      status = INSTALL_NONE;  // No command specified
+      ui->SetBackground(RecoveryUI::NO_COMMAND);
     }
 
     if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
