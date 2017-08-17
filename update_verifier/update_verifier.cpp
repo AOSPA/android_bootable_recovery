@@ -45,6 +45,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -123,11 +124,6 @@ static bool read_blocks(const std::string& partition, const std::string& range_s
     LOG(ERROR) << "Failed to find dm block device for " << partition;
     return false;
   }
-  android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(dm_block_device.c_str(), O_RDONLY)));
-  if (fd.get() == -1) {
-    PLOG(ERROR) << "Error reading " << dm_block_device << " for partition " << partition;
-    return false;
-  }
 
   // For block range string, first integer 'count' equals 2 * total number of valid ranges,
   // followed by 'count' number comma separated integers. Every two integers reprensent a
@@ -142,37 +138,61 @@ static bool read_blocks(const std::string& partition, const std::string& range_s
     return false;
   }
 
-  size_t blk_count = 0;
-  for (size_t i = 1; i < ranges.size(); i += 2) {
-    unsigned int range_start, range_end;
-    bool parse_status = android::base::ParseUint(ranges[i], &range_start);
-    parse_status = parse_status && android::base::ParseUint(ranges[i + 1], &range_end);
-    if (!parse_status || range_start >= range_end) {
-      LOG(ERROR) << "Invalid range pair " << ranges[i] << ", " << ranges[i + 1];
-      return false;
-    }
+  std::vector<std::future<bool>> threads;
+  size_t thread_num = std::thread::hardware_concurrency() ?: 4;
+  thread_num = std::min(thread_num, range_count / 2);
+  size_t group_range_count = range_count / thread_num;
 
-    static constexpr size_t BLOCKSIZE = 4096;
-    if (lseek64(fd.get(), static_cast<off64_t>(range_start) * BLOCKSIZE, SEEK_SET) == -1) {
-      PLOG(ERROR) << "lseek to " << range_start << " failed";
-      return false;
-    }
-
-    size_t remain = (range_end - range_start) * BLOCKSIZE;
-    while (remain > 0) {
-      size_t to_read = std::min(remain, 1024 * BLOCKSIZE);
-      std::vector<uint8_t> buf(to_read);
-      if (!android::base::ReadFully(fd.get(), buf.data(), to_read)) {
-        PLOG(ERROR) << "Failed to read blocks " << range_start << " to " << range_end;
+  for (size_t t = 0; t < thread_num; t++) {
+    auto thread_func = [t, group_range_count, &dm_block_device, &ranges, &partition]() {
+      size_t blk_count = 0;
+      static constexpr size_t kBlockSize = 4096;
+      std::vector<uint8_t> buf(1024 * kBlockSize);
+      android::base::unique_fd fd(TEMP_FAILURE_RETRY(open(dm_block_device.c_str(), O_RDONLY)));
+      if (fd.get() == -1) {
+        PLOG(ERROR) << "Error reading " << dm_block_device << " for partition " << partition;
         return false;
       }
-      remain -= to_read;
-    }
-    blk_count += (range_end - range_start);
+
+      for (size_t i = 1 + group_range_count * t; i < group_range_count * (t + 1) + 1; i += 2) {
+        unsigned int range_start, range_end;
+        bool parse_status = android::base::ParseUint(ranges[i], &range_start);
+        parse_status = parse_status && android::base::ParseUint(ranges[i + 1], &range_end);
+        if (!parse_status || range_start >= range_end) {
+          LOG(ERROR) << "Invalid range pair " << ranges[i] << ", " << ranges[i + 1];
+          return false;
+        }
+
+        if (lseek64(fd.get(), static_cast<off64_t>(range_start) * kBlockSize, SEEK_SET) == -1) {
+          PLOG(ERROR) << "lseek to " << range_start << " failed";
+          return false;
+        }
+
+        size_t remain = (range_end - range_start) * kBlockSize;
+        while (remain > 0) {
+          size_t to_read = std::min(remain, 1024 * kBlockSize);
+          if (!android::base::ReadFully(fd.get(), buf.data(), to_read)) {
+            PLOG(ERROR) << "Failed to read blocks " << range_start << " to " << range_end;
+            return false;
+          }
+          remain -= to_read;
+        }
+        blk_count += (range_end - range_start);
+      }
+      LOG(INFO) << "Finished reading " << blk_count << " blocks on " << dm_block_device;
+      return true;
+    };
+
+    threads.emplace_back(std::async(std::launch::async, thread_func));
   }
 
-  LOG(INFO) << "Finished reading " << blk_count << " blocks on " << dm_block_device;
-  return true;
+  bool ret = true;
+  for (auto& t : threads) {
+    ret = t.get() && ret;
+  }
+  LOG(INFO) << "Finished reading blocks on " << dm_block_device << " with " << thread_num
+            << " threads.";
+  return ret;
 }
 
 // Returns true to indicate a passing verification (or the error should be ignored); Otherwise
@@ -252,23 +272,36 @@ int update_verifier(int argc, char** argv) {
     // The current slot has not booted successfully.
 
 #if defined(PRODUCT_SUPPORTS_VERITY) || defined(BOARD_AVB_ENABLE)
+    bool skip_verification = false;
     std::string verity_mode = android::base::GetProperty("ro.boot.veritymode", "");
     if (verity_mode.empty()) {
+      // With AVB it's possible to disable verification entirely and
+      // in this case ro.boot.veritymode is empty.
+#if defined(BOARD_AVB_ENABLE)
+      LOG(WARNING) << "verification has been disabled; marking without verification.";
+      skip_verification = true;
+#else
       LOG(ERROR) << "Failed to get dm-verity mode.";
       return reboot_device();
+#endif
     } else if (android::base::EqualsIgnoreCase(verity_mode, "eio")) {
       // We shouldn't see verity in EIO mode if the current slot hasn't booted successfully before.
       // Continue the verification until we fail to read some blocks.
       LOG(WARNING) << "Found dm-verity in EIO mode.";
+    } else if (android::base::EqualsIgnoreCase(verity_mode, "disabled")) {
+      LOG(WARNING) << "dm-verity in disabled mode; marking without verification.";
+      skip_verification = true;
     } else if (verity_mode != "enforcing") {
       LOG(ERROR) << "Unexpected dm-verity mode : " << verity_mode << ", expecting enforcing.";
       return reboot_device();
     }
 
-    static constexpr auto CARE_MAP_FILE = "/data/ota_package/care_map.txt";
-    if (!verify_image(CARE_MAP_FILE)) {
-      LOG(ERROR) << "Failed to verify all blocks in care map file.";
-      return reboot_device();
+    if (!skip_verification) {
+      static constexpr auto CARE_MAP_FILE = "/data/ota_package/care_map.txt";
+      if (!verify_image(CARE_MAP_FILE)) {
+        LOG(ERROR) << "Failed to verify all blocks in care map file.";
+        return reboot_device();
+      }
     }
 #else
     LOG(WARNING) << "dm-verity not enabled; marking without verification.";
