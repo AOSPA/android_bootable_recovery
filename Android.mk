@@ -89,7 +89,7 @@ LOCAL_REQUIRED_MODULES := e2fsdroid_static mke2fs_static mke2fs.conf
 
 ifeq ($(TARGET_USERIMAGES_USE_F2FS),true)
 ifeq ($(HOST_OS),linux)
-LOCAL_REQUIRED_MODULES += mkfs.f2fs
+LOCAL_REQUIRED_MODULES += sload.f2fs mkfs.f2fs
 endif
 endif
 
@@ -147,10 +147,21 @@ endif
 LOCAL_C_INCLUDES += \
     system/vold \
 
+# Health HAL dependency
 LOCAL_STATIC_LIBRARIES := \
+    android.hardware.health@2.0-impl \
+    android.hardware.health@2.0 \
+    android.hardware.health@1.0 \
+    android.hardware.health@1.0-convert \
+    libhidltransport \
+    libhidlbase \
+    libhwbinder \
+    libvndksupport \
+    libbatterymonitor
+
+LOCAL_STATIC_LIBRARIES += \
     librecovery \
     libverifier \
-    libbatterymonitor \
     libbootloader_message \
     libfs_mgr \
     libext4_utils \
@@ -168,8 +179,8 @@ LOCAL_STATIC_LIBRARIES := \
     libvintf \
     libtinyxml2 \
     libbase \
-    libcutils \
     libutils \
+    libcutils \
     liblog \
     libselinux \
     libz
@@ -262,6 +273,5 @@ include \
     $(LOCAL_PATH)/minui/Android.mk \
     $(LOCAL_PATH)/tests/Android.mk \
     $(LOCAL_PATH)/tools/Android.mk \
-    $(LOCAL_PATH)/uncrypt/Android.mk \
     $(LOCAL_PATH)/updater/Android.mk \
     $(LOCAL_PATH)/update_verifier/Android.mk \

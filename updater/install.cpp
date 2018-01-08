@@ -303,15 +303,30 @@ Value* FormatFn(const char* name, State* state, const std::vector<std::unique_pt
     std::string num_sectors = std::to_string(size / 512);
 
     const char* f2fs_path = "/sbin/mkfs.f2fs";
-    const char* f2fs_argv[] = {
-      "mkfs.f2fs", "-t", "-d1", location.c_str(), (size < 512) ? nullptr : num_sectors.c_str(),
-      nullptr
-    };
+    const char* f2fs_argv[] = { "mkfs.f2fs",
+                                "-d1",
+                                "-f",
+                                "-O",
+                                "encrypt",
+                                "-O",
+                                "quota",
+                                location.c_str(),
+                                (size < 512) ? nullptr : num_sectors.c_str(),
+                                nullptr };
     int status = exec_cmd(f2fs_path, const_cast<char**>(f2fs_argv));
     if (status != 0) {
       LOG(ERROR) << name << ": mkfs.f2fs failed (" << status << ") on " << location;
       return StringValue("");
     }
+
+    const char* sload_argv[] = { "/sbin/sload.f2fs", "-t", mount_point.c_str(), location.c_str(),
+                                 nullptr };
+    status = exec_cmd(sload_argv[0], const_cast<char**>(sload_argv));
+    if (status != 0) {
+      LOG(ERROR) << name << ": sload.f2fs failed (" << status << ") on " << location;
+      return StringValue("");
+    }
+
     return StringValue(location);
   } else {
     LOG(ERROR) << name << ": unsupported fs_type \"" << fs_type << "\" partition_type \""
@@ -563,7 +578,11 @@ Value* ApplyPatchSpaceFn(const char* name, State* state, const std::vector<std::
                       name, bytes_str.c_str());
   }
 
-  return StringValue(CacheSizeCheck(bytes) ? "" : "t");
+  // Skip the cache size check if the update is a retry.
+  if (state->is_retry || CacheSizeCheck(bytes) == 0) {
+    return StringValue("t");
+  }
+  return StringValue("");
 }
 
 // apply_patch(src_file, tgt_file, tgt_sha1, tgt_size, patch1_sha1, patch1_blob, [...])
