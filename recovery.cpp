@@ -31,6 +31,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/mount.h>
+#include <fs_mgr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -73,6 +75,8 @@
 #include "screen_ui.h"
 #include "stub_ui.h"
 #include "ui.h"
+
+#define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
 
 static const struct option OPTIONS[] = {
   { "update_package", required_argument, NULL, 'u' },
@@ -1021,6 +1025,46 @@ static void run_graphics_test() {
   ui->ShowText(true);
 }
 
+static int is_ufs_dev()
+{
+    char bootdevice[PROPERTY_VALUE_MAX] = {0};
+    property_get("ro.boot.bootdevice", bootdevice, "N/A");
+    ui->Print("ro.boot.bootdevice is: %s\n",bootdevice);
+    if (strlen(bootdevice) < strlen(".ufshc") + 1)
+        return 0;
+    return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
+                           ".ufshc",
+                           sizeof(".ufshc")));
+}
+
+static int do_sdcard_mount_for_ufs()
+{
+    int rc = 0;
+    ui->Print("Update via sdcard on UFS dev.Mounting card\n");
+    Volume *v = volume_for_path("/sdcard");
+    if (v == NULL) {
+        ui->Print("Unknown volume for /sdcard.Check fstab\n");
+        goto error;
+    }
+    if (strncmp(v->fs_type, "vfat", sizeof("vfat"))) {
+        ui->Print("Unsupported format on the sdcard: %s\n",v->fs_type);
+        goto error;
+    }
+    rc = mount(UFS_DEV_SDCARD_BLK_PATH,
+                   v->mount_point,
+                   v->fs_type,
+                   v->flags,
+                   v->fs_options);
+    if (rc) {
+        ui->Print("Failed to mount sdcard : %s\n", strerror(errno));
+        goto error;
+    }
+    ui->Print("Done mounting sdcard\n");
+    return 0;
+error:
+    return -1;
+}
+
 // How long (in seconds) we wait for the fuse-provided package file to
 // appear, before timing out.
 #define SDCARD_INSTALL_TIMEOUT 10
@@ -1028,11 +1072,17 @@ static void run_graphics_test() {
 static int apply_from_sdcard(Device* device, bool* wipe_cache) {
     modified_flash = true;
 
+    if (is_ufs_dev()) {
+       if (do_sdcard_mount_for_ufs() != 0) {
+           ui->Print("\nFailed to mount sdcard\n");
+            return INSTALL_ERROR;
+        }
+    } else {
     if (ensure_path_mounted(SDCARD_ROOT) != 0) {
         ui->Print("\n-- Couldn't mount %s.\n", SDCARD_ROOT);
         return INSTALL_ERROR;
     }
-
+}
     std::string path = browse_directory(SDCARD_ROOT, device);
     if (path.empty()) {
         ui->Print("\n-- No package file selected.\n");
@@ -1079,7 +1129,7 @@ static int apply_from_sdcard(Device* device, bool* wipe_cache) {
         }
 
         result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache,
-                                 TEMPORARY_INSTALL_FILE, false, 0/*retry_count*/);
+                                 TEMPORARY_INSTALL_FILE, true, 0/*retry_count*/);
         break;
     }
 
@@ -1407,6 +1457,8 @@ int main(int argc, char **argv) {
     bool shutdown_after = false;
     int retry_count = 0;
     bool security_update = false;
+    int status = INSTALL_SUCCESS;
+    bool mount_required = true;
 
     int arg;
     int option_index;
@@ -1495,12 +1547,29 @@ int main(int argc, char **argv) {
     }
     printf("\n\n");
 
+    if (update_package) {
+        if (!strncmp("/sdcard", update_package, 7)) {
+            //If this is a UFS device lets mount the sdcard ourselves.Depending
+            //on if the device is UFS or EMMC based the path to the sdcard
+            //device changes so we cannot rely on the block dev path from
+            //recovery.fstab
+            if (is_ufs_dev()) {
+                if(do_sdcard_mount_for_ufs() != 0) {
+                    status = INSTALL_ERROR;
+                    goto error;
+                }
+                mount_required = false;
+            } else {
+                ui->Print("Update via sdcard on EMMC dev. Using path from fstab\n");
+            }
+        }
+    }
+
     property_list(print_property, NULL);
     printf("\n");
 
     ui->Print("Supported API: %d\n", RECOVERY_API_VERSION);
 
-    int status = INSTALL_SUCCESS;
 
     if (update_package != NULL) {
         // It's not entirely true that we will modify the flash. But we want
@@ -1521,7 +1590,7 @@ int main(int argc, char **argv) {
             status = INSTALL_SKIPPED;
         } else {
             status = install_package(update_package, &should_wipe_cache,
-                                     TEMPORARY_INSTALL_FILE, true, retry_count);
+                                     TEMPORARY_INSTALL_FILE, mount_required, retry_count);
             if (status == INSTALL_SUCCESS && should_wipe_cache) {
                 wipe_cache(false, device);
             }
@@ -1602,6 +1671,7 @@ int main(int argc, char **argv) {
       ui->SetBackground(RecoveryUI::NO_COMMAND);
     }
 
+    error:
     if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
         ui->SetBackground(RecoveryUI::ERROR);
         if (!ui->IsTextVisible()) {
