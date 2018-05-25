@@ -772,7 +772,7 @@ static int apply_from_sdcard(Device* device, bool* wipe_cache) {
             }
         }
 
-        result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0 /*retry_count*/);
+        result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, true, 0 /*retry_count*/);
         break;
     }
 
@@ -1171,6 +1171,23 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   }
   printf("\n\n");
 
+   if (update_package) {
+        if (!strncmp("/sdcard", update_package, 7)) {
+            //If this is a UFS device lets mount the sdcard ourselves.Depending
+            //on if the device is UFS or EMMC based the path to the sdcard
+            //device changes so we cannot rely on the block dev path from
+            //recovery.fstab file
+            if (is_ufs_dev()) {
+                if(do_sdcard_mount_for_ufs() != 0) {
+                    status = INSTALL_ERROR;
+                    goto error;
+                }
+            } else {
+                ui->Print("Update via sdcard on EMMC dev. Using path from fstab\n");
+            }
+        }
+    }
+
   property_list(print_property, nullptr);
   printf("\n");
 
@@ -1292,8 +1309,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     ui->SetBackground(RecoveryUI::NO_COMMAND);
   }
 
-//error:
-//  if (is_ro_debuggable()) ui->ShowText(true);
+error:
   if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
     ui->SetBackground(RecoveryUI::ERROR);
     if (!ui->IsTextVisible()) {
