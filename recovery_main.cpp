@@ -84,7 +84,7 @@ static void UiLogger(android::base::LogId log_buffer_id, android::base::LogSever
   }
 }
 
-static std::string get_build_type() {
+std::string get_build_type() {
   return android::base::GetProperty("ro.build.type", "");
 }
 
