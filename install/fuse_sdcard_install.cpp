@@ -136,56 +136,11 @@ static bool StartSdcardFuse(const std::string& path) {
   return run_fuse_sideload(std::move(file_data_reader)) == 0;
 }
 
-static int is_ufs_dev() {
-  char bootdevice[PROPERTY_VALUE_MAX] = {0};
-  property_get("ro.boot.bootdevice", bootdevice, "N/A");
-  LOG(ERROR) << "ro.boot.bootdevice is: " << bootdevice << "\n";
-  if (strlen(bootdevice) < strlen(".ufshc") + 1)
-    return 0;
-  return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
-                   ".ufshc",
-                   sizeof(".ufshc")));
-}
-
-static int do_sdcard_mount_for_ufs() {
-  int rc = 0;
-  LOG(ERROR) << "Update via sdcard on UFS dev.Mounting card\n";
-  Volume *v = volume_for_mount_point("/sdcard");
-  if (v == nullptr) {
-    LOG(ERROR) << "Unknown volume for /sdcard.Check fstab\n";
-    goto error;
-  }
-  if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
-    LOG(ERROR) << "Unsupported format on the sdcard: "
-               << v->fs_type.c_str() << "\n";
-    goto error;
-  }
-  rc = mount(UFS_DEV_SDCARD_BLK_PATH,
-             v->mount_point.c_str(),
-             v->fs_type.c_str(),
-             v->flags,
-             v->fs_options.c_str());
-  if (rc) {
-    LOG(ERROR) << "Failed to mount sdcard: " << strerror(errno) << "\n";
-    goto error;
-  }
-  LOG(ERROR) << "Done mounting sdcard\n";
-  return 0;
-error:
-  return -1;
-}
-
-int ApplyFromSdcard(Device* device, RecoveryUI* ui) {
-  if (is_ufs_dev()) {
-    if (do_sdcard_mount_for_ufs() != 0) {
-      LOG(ERROR) << "\nFailed to mount sdcard\n";
-      return INSTALL_ERROR;
-    }
-  } else {
-    if (ensure_path_mounted(SDCARD_ROOT) != 0) {
-      LOG(ERROR) << "\n-- Couldn't mount " << SDCARD_ROOT << ".\n";
-      return INSTALL_ERROR;
-    }
+int ApplyFromSdcard(Device* device, RecoveryUI* ui,
+                    const std::function<bool(Device*)>& ask_to_continue_unverified_fn) {
+  if (ensure_path_mounted(SDCARD_ROOT) != 0) {
+    LOG(ERROR) << "\n-- Couldn't mount " << SDCARD_ROOT << ".\n";
+    return INSTALL_ERROR;
   }
 
   std::string path = BrowseDirectory(SDCARD_ROOT, device, ui);
@@ -233,7 +188,12 @@ int ApplyFromSdcard(Device* device, RecoveryUI* ui) {
       }
     }
 
-    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, true, 0 /*retry_count*/, ui);
+    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, false, 0 /*retry_count*/,
+                             true /* verify */, ui);
+    if (result == INSTALL_UNVERIFIED && ask_to_continue_unverified_fn(device)) {
+      result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, false, 0 /*retry_count*/,
+                               false /* verify */, ui);
+    }
     break;
   }
 
