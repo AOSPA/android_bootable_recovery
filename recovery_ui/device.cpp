@@ -54,6 +54,7 @@ static void PopulateMenuItems() {
 }
 
 Device::Device(RecoveryUI* ui) : ui_(ui) {
+  ui->SetDevice(this);
   PopulateMenuItems();
 }
 
