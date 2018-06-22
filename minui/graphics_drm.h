@@ -24,6 +24,26 @@
 #include "graphics.h"
 #include "minui/minui.h"
 
+#define NUM_MAIN 1
+#define NUM_PLANES 2
+
+struct Crtc {
+  drmModeObjectProperties *props;
+  drmModePropertyRes **props_info;
+  uint32_t mode_blob_id;
+};
+
+struct Connector {
+  drmModeObjectProperties *props;
+  drmModePropertyRes **props_info;
+};
+
+struct Plane {
+  drmModePlane *plane;
+  drmModeObjectProperties *props;
+  drmModePropertyRes ** props_info;
+};
+
 class GRSurfaceDrm : public GRSurface {
  private:
   uint32_t fb_id;
@@ -41,18 +61,27 @@ class MinuiBackendDrm : public MinuiBackend {
   MinuiBackendDrm();
 
  private:
-  void DrmDisableCrtc(int drm_fd, drmModeCrtc* crtc);
-  void DrmEnableCrtc(int drm_fd, drmModeCrtc* crtc, GRSurfaceDrm* surface);
+  enum screen_side{Left, Right};
+  int DrmDisableCrtc(drmModeAtomicReqPtr atomic_req);
+  int DrmEnableCrtc(drmModeAtomicReqPtr atomic_req);
   GRSurfaceDrm* DrmCreateSurface(int width, int height);
   void DrmDestroySurface(GRSurfaceDrm* surface);
   void DisableNonMainCrtcs(int fd, drmModeRes* resources, drmModeCrtc* main_crtc);
   drmModeConnector* FindMainMonitor(int fd, drmModeRes* resources, uint32_t* mode_index);
-
+  int SetupPipeline(drmModeAtomicReqPtr atomic_req);
+  int TeardownPipeline(drmModeAtomicReqPtr atomic_req);
+  void UpdatePlaneFB();
+  int AtomicPopulatePlane(int plane, drmModeAtomicReqPtr atomic_req);
   GRSurfaceDrm* GRSurfaceDrms[2];
   int current_buffer;
   drmModeCrtc* main_monitor_crtc;
   drmModeConnector* main_monitor_connector;
   int drm_fd;
+  bool current_blank_state = true;
+  int fb_prop_id;
+  struct Crtc crtc_res;
+  struct Connector conn_res;
+  struct Plane plane_res[NUM_PLANES];
 };
 
 #endif  // _GRAPHICS_DRM_H_
