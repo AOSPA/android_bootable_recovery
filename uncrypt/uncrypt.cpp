@@ -172,14 +172,15 @@ static struct fstab* read_fstab() {
     return fstab;
 }
 
-static const char* find_block_device(const char* path, bool* encryptable, bool* encrypted, bool *f2fs_fs) {
+static const char* find_block_device(const char* path, bool* encryptable,
+                                     bool* encrypted, bool* f2fs_fs) {
     // Look for a volume whose mount point is the prefix of path and
     // return its block device.  Set encrypted if it's currently
     // encrypted.
 
-    // ensure f2fs_fs is set to 0 first.
-    if (f2fs_fs)
-        *f2fs_fs = false;
+    // ensure f2fs_fs is set to false first.
+    *f2fs_fs = false;
+
     for (int i = 0; i < fstab->num_entries; ++i) {
         struct fstab_rec* v = &fstab->recs[i];
         if (!v->mount_point) {
@@ -196,8 +197,9 @@ static const char* find_block_device(const char* path, bool* encryptable, bool* 
                     *encrypted = true;
                 }
             }
-            if (f2fs_fs && strcmp(v->fs_type, "f2fs") == 0)
+            if (strcmp(v->fs_type, "f2fs") == 0) {
                 *f2fs_fs = true;
+            }
             return v->blk_device;
         }
     }
@@ -313,15 +315,29 @@ static int produce_block_map(const char* path, const char* map_file, const char*
         }
     }
 
-#ifndef F2FS_IOC_SET_DONTMOVE
+// F2FS-specific ioctl
+// It requires the below kernel commit merged in v4.16-rc1.
+//   1ad71a27124c ("f2fs: add an ioctl to disable GC for specific file")
+// In android-4.4,
+//   56ee1e817908 ("f2fs: updates on v4.16-rc1")
+// In android-4.9,
+//   2f17e34672a8 ("f2fs: updates on v4.16-rc1")
+// In android-4.14,
+//   ce767d9a55bc ("f2fs: updates on v4.16-rc1")
+#ifndef F2FS_IOC_SET_PIN_FILE
 #ifndef F2FS_IOCTL_MAGIC
 #define F2FS_IOCTL_MAGIC		0xf5
 #endif
-#define F2FS_IOC_SET_DONTMOVE		_IO(F2FS_IOCTL_MAGIC, 13)
+#define F2FS_IOC_SET_PIN_FILE	_IOW(F2FS_IOCTL_MAGIC, 13, __u32)
+#define F2FS_IOC_GET_PIN_FILE	_IOW(F2FS_IOCTL_MAGIC, 14, __u32)
 #endif
-    if (f2fs_fs && ioctl(fd, F2FS_IOC_SET_DONTMOVE) < 0) {
-        PLOG(ERROR) << "Failed to set non-movable file for f2fs: " << path << " on " << blk_dev;
-        return kUncryptIoctlError;
+    if (f2fs_fs) {
+        int error = ioctl(fd, F2FS_IOC_SET_PIN_FILE);
+        // Don't break the old kernels which don't support it.
+        if (error && errno != ENOTTY && errno != ENOTSUP) {
+            PLOG(ERROR) << "Failed to set pin_file for f2fs: " << path << " on " << blk_dev;
+            return kUncryptIoctlError;
+        }
     }
 
     off64_t pos = 0;

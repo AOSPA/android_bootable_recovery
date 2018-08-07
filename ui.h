@@ -17,11 +17,15 @@
 #ifndef RECOVERY_UI_H
 #define RECOVERY_UI_H
 
-#include <linux/input.h>
-#include <pthread.h>
-#include <time.h>
+#include <linux/input.h>  // KEY_MAX
 
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 // Abstract class for controlling the user interface during recovery.
 class RecoveryUI {
@@ -49,11 +53,13 @@ class RecoveryUI {
 
   RecoveryUI();
 
-  virtual ~RecoveryUI() {}
+  virtual ~RecoveryUI();
 
   // Initializes the object; called before anything else. UI texts will be initialized according to
   // the given locale. Returns true on success.
   virtual bool Init(const std::string& locale);
+
+  virtual std::string GetLocale() const = 0;
 
   // Shows a stage indicator. Called immediately after Init().
   virtual void SetStage(int current, int max) = 0;
@@ -87,7 +93,9 @@ class RecoveryUI {
   virtual void Print(const char* fmt, ...) __printflike(2, 3) = 0;
   virtual void PrintOnScreenOnly(const char* fmt, ...) __printflike(2, 3) = 0;
 
-  virtual void ShowFile(const char* filename) = 0;
+  // Shows the contents of the given file. Caller ensures the patition that contains the file has
+  // been mounted.
+  virtual void ShowFile(const std::string& filename) = 0;
 
   // --- key handling ---
 
@@ -128,17 +136,21 @@ class RecoveryUI {
 
   // --- menu display ---
 
-  // Display some header text followed by a menu of items, which appears at the top of the screen
-  // (in place of any scrolling ui_print() output, if necessary).
-  virtual void StartMenu(const char* const* headers, const char* const* items,
-                         int initial_selection) = 0;
+  virtual void SetTitle(const std::vector<std::string>& lines) = 0;
 
-  // Sets the menu highlight to the given index, wrapping if necessary. Returns the actual item
-  // selected.
-  virtual int SelectMenu(int sel) = 0;
-
-  // Ends menu mode, resetting the text overlay so that ui_print() statements will be displayed.
-  virtual void EndMenu() = 0;
+  // Displays a menu with the given 'headers' and 'items'. The supplied 'key_handler' callback,
+  // which is typically bound to Device::HandleMenuKey(), should return the expected action for the
+  // given key code and menu visibility (e.g. to move the cursor or to select an item). Caller sets
+  // 'menu_only' to true to ensure only a menu item gets selected and returned. Otherwise if
+  // 'menu_only' is false, ShowMenu() will forward any non-negative value returned from the
+  // key_handler, which may be beyond the range of menu items. This could be used to trigger a
+  // device-specific action, even without that being listed in the menu. Caller needs to handle
+  // such a case accordingly (e.g. by calling Device::InvokeMenuItem() to process the action).
+  // Returns a non-negative value (the chosen item number or device-specific action code), or
+  // static_cast<size_t>(-1) if timed out waiting for input.
+  virtual size_t ShowMenu(const std::vector<std::string>& headers,
+                          const std::vector<std::string>& items, size_t initial_selection,
+                          bool menu_only, const std::function<int(int, bool)>& key_handler) = 0;
 
  protected:
   void EnqueueKey(int key_code);
@@ -162,12 +174,6 @@ class RecoveryUI {
     OFF
   };
 
-  struct key_timer_t {
-    RecoveryUI* ui;
-    int key_code;
-    int count;
-  };
-
   // The sensitivity when detecting a swipe.
   const int kTouchLowThreshold;
   const int kTouchHighThreshold;
@@ -176,17 +182,15 @@ class RecoveryUI {
   void OnTouchDetected(int dx, int dy);
   int OnInputEvent(int fd, uint32_t epevents);
   void ProcessKey(int key_code, int updown);
+  void TimeKey(int key_code, int count);
 
   bool IsUsbConnected();
-
-  static void* time_key_helper(void* cookie);
-  void time_key(int key_code, int count);
 
   bool InitScreensaver();
 
   // Key event input queue
-  pthread_mutex_t key_queue_mutex;
-  pthread_cond_t key_queue_cond;
+  std::mutex key_queue_mutex;
+  std::condition_variable key_queue_cond;
   int key_queue[256], key_queue_len;
   char key_pressed[KEY_MAX + 1];  // under key_queue_mutex
   int key_last_down;              // under key_queue_mutex
@@ -213,7 +217,8 @@ class RecoveryUI {
   bool touch_swiping_;
   bool is_bootreason_recovery_ui_;
 
-  pthread_t input_thread_;
+  std::thread input_thread_;
+  std::atomic<bool> input_thread_stopped_{ false };
 
   ScreensaverState screensaver_state_;
 

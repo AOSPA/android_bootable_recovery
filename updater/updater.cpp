@@ -17,9 +17,9 @@
 #include "updater/updater.h"
 
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <string>
 
@@ -32,10 +32,9 @@
 
 #include "edify/expr.h"
 #include "otafault/config.h"
-#include "otautil/DirUtil.h"
-#include "otautil/SysUtil.h"
-#include "otautil/cache_location.h"
+#include "otautil/dirutil.h"
 #include "otautil/error_code.h"
+#include "otautil/sysutil.h"
 #include "updater/blockimg.h"
 #include "updater/install.h"
 
@@ -135,7 +134,7 @@ int main(int argc, char** argv) {
 
   std::unique_ptr<Expr> root;
   int error_count = 0;
-  int error = parse_string(script.c_str(), &root, &error_count);
+  int error = ParseString(script, &root, &error_count);
   if (error != 0 || error_count > 0) {
     LOG(ERROR) << error_count << " parse errors";
     CloseArchive(za);

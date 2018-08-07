@@ -17,6 +17,9 @@
 #ifndef RECOVERY_WEAR_UI_H
 #define RECOVERY_WEAR_UI_H
 
+#include <string>
+#include <vector>
+
 #include "screen_ui.h"
 
 class WearRecoveryUI : public ScreenRecoveryUI {
@@ -24,11 +27,6 @@ class WearRecoveryUI : public ScreenRecoveryUI {
   WearRecoveryUI();
 
   void SetStage(int current, int max) override;
-
-  // menu display
-  void StartMenu(const char* const* headers, const char* const* items,
-                 int initial_selection) override;
-  int SelectMenu(int sel) override;
 
  protected:
   // progress bar vertical position, it's centered horizontally
@@ -38,6 +36,9 @@ class WearRecoveryUI : public ScreenRecoveryUI {
   // Recovery, build id and etc) and the bottom lines that may otherwise go out of the screen.
   const int kMenuUnusableRows;
 
+  void StartMenu(const std::vector<std::string>& headers, const std::vector<std::string>& items,
+                 size_t initial_selection) override;
+
   int GetProgressBaseline() const override;
 
   void update_progress_locked() override;
@@ -45,8 +46,6 @@ class WearRecoveryUI : public ScreenRecoveryUI {
  private:
   void draw_background_locked() override;
   void draw_screen_locked() override;
-
-  int menu_start, menu_end;
 };
 
 #endif  // RECOVERY_WEAR_UI_H

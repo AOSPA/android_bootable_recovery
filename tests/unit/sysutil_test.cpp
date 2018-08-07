@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#include <gtest/gtest.h>
-
 #include <string>
 
 #include <android-base/file.h>
 #include <android-base/test_utils.h>
+#include <gtest/gtest.h>
 
-#include "otautil/SysUtil.h"
+#include "otautil/sysutil.h"
 
 TEST(SysUtilTest, InvalidArgs) {
   MemMapping mapping;
@@ -127,4 +126,14 @@ TEST(SysUtilTest, MapFileBlockMapInvalidBlockMap) {
   // Invalid block dev path.
   ASSERT_TRUE(android::base::WriteStringToFile("/doesntexist\n4096 4096\n1\n0 1\n", temp_file.path));
   ASSERT_FALSE(mapping.MapFile(filename));
+}
+
+TEST(SysUtilTest, StringVectorToNullTerminatedArray) {
+  std::vector<std::string> args{ "foo", "bar", "baz" };
+  auto args_with_nullptr = StringVectorToNullTerminatedArray(args);
+  ASSERT_EQ(4, args_with_nullptr.size());
+  ASSERT_STREQ("foo", args_with_nullptr[0]);
+  ASSERT_STREQ("bar", args_with_nullptr[1]);
+  ASSERT_STREQ("baz", args_with_nullptr[2]);
+  ASSERT_EQ(nullptr, args_with_nullptr[3]);
 }

@@ -17,16 +17,84 @@
 #ifndef RECOVERY_SCREEN_UI_H
 #define RECOVERY_SCREEN_UI_H
 
-#include <pthread.h>
 #include <stdio.h>
 
+#include <atomic>
+#include <functional>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "ui.h"
 
 // From minui/minui.h.
 struct GRSurface;
+
+// This class maintains the menu selection and display of the screen ui.
+class Menu {
+ public:
+  // Constructs a Menu instance with the given |headers|, |items| and properties. Sets the initial
+  // selection to |initial_selection|.
+  Menu(bool scrollable, size_t max_items, size_t max_length,
+       const std::vector<std::string>& headers, const std::vector<std::string>& items,
+       size_t initial_selection);
+
+  bool scrollable() const {
+    return scrollable_;
+  }
+
+  size_t selection() const {
+    return selection_;
+  }
+
+  // Returns count of menu items.
+  size_t ItemsCount() const;
+
+  // Returns the index of the first menu item.
+  size_t MenuStart() const;
+
+  // Returns the index of the last menu item + 1.
+  size_t MenuEnd() const;
+
+  // Menu example:
+  // info:                           Android Recovery
+  //                                 ....
+  // help messages:                  Swipe up/down to move
+  //                                 Swipe left/right to select
+  // empty line (horizontal rule):
+  // menu headers:                   Select file to view
+  // menu items:                     /cache/recovery/last_log
+  //                                 /cache/recovery/last_log.1
+  //                                 /cache/recovery/last_log.2
+  //                                 ...
+  const std::vector<std::string>& text_headers() const;
+  std::string TextItem(size_t index) const;
+
+  // Checks if the menu items fit vertically on the screen. Returns true and set the
+  // |cur_selection_str| if the items exceed the screen limit.
+  bool ItemsOverflow(std::string* cur_selection_str) const;
+
+  // Sets the current selection to |sel|. Handle the overflow cases depending on if the menu is
+  // scrollable.
+  int Select(int sel);
+
+ private:
+  // The menu is scrollable to display more items. Used on wear devices who have smaller screens.
+  const bool scrollable_;
+  // The max number of menu items to fit vertically on a screen.
+  const size_t max_display_items_;
+  // The length of each item to fit horizontally on a screen.
+  const size_t max_item_length_;
+  // The menu headers.
+  std::vector<std::string> text_headers_;
+  // The actual menu items trimmed to fit the given properties.
+  std::vector<std::string> text_items_;
+  // The first item to display on the screen.
+  size_t menu_start_;
+  // Current menu selection.
+  size_t selection_;
+};
 
 // Implementation of RecoveryUI appropriate for devices with a screen
 // (shows an icon + a progress bar, text logging, menu, etc.)
@@ -44,8 +112,11 @@ class ScreenRecoveryUI : public RecoveryUI {
   };
 
   ScreenRecoveryUI();
+  explicit ScreenRecoveryUI(bool scrollable_menu);
+  ~ScreenRecoveryUI() override;
 
   bool Init(const std::string& locale) override;
+  std::string GetLocale() const override;
 
   // overall recovery state ("background image")
   void SetBackground(Icon icon) override;
@@ -66,13 +137,13 @@ class ScreenRecoveryUI : public RecoveryUI {
   // printing messages
   void Print(const char* fmt, ...) override __printflike(2, 3);
   void PrintOnScreenOnly(const char* fmt, ...) override __printflike(2, 3);
-  void ShowFile(const char* filename) override;
+  void ShowFile(const std::string& filename) override;
 
   // menu display
-  void StartMenu(const char* const* headers, const char* const* items,
-                 int initial_selection) override;
-  int SelectMenu(int sel) override;
-  void EndMenu() override;
+  size_t ShowMenu(const std::vector<std::string>& headers, const std::vector<std::string>& items,
+                  size_t initial_selection, bool menu_only,
+                  const std::function<int(int, bool)>& key_handler) override;
+  void SetTitle(const std::vector<std::string>& lines) override;
 
   void KeyLongPress(int) override;
 
@@ -80,9 +151,9 @@ class ScreenRecoveryUI : public RecoveryUI {
 
   void SetColor(UIElement e) const;
 
-  // Check the background text image. Use volume up/down button to cycle through the locales
-  // embedded in the png file, and power button to go back to recovery main menu.
-  void CheckBackgroundTextImages(const std::string& saved_locale);
+  // Checks the background text image, for debugging purpose. It iterates the locales embedded in
+  // the on-device resource files and shows the localized text, for manual inspection.
+  void CheckBackgroundTextImages();
 
  protected:
   // The margin that we don't want to use for showing texts (e.g. round screen, or screen with
@@ -98,16 +169,28 @@ class ScreenRecoveryUI : public RecoveryUI {
 
   virtual bool InitTextParams();
 
+  // Displays some header text followed by a menu of items, which appears at the top of the screen
+  // (in place of any scrolling ui_print() output, if necessary).
+  virtual void StartMenu(const std::vector<std::string>& headers,
+                         const std::vector<std::string>& items, size_t initial_selection);
+
+  // Sets the menu highlight to the given index, wrapping if necessary. Returns the actual item
+  // selected.
+  virtual int SelectMenu(int sel);
+
+  // Ends menu mode, resetting the text overlay so that ui_print() statements will be displayed.
+  virtual void EndMenu();
+
   virtual void draw_background_locked();
   virtual void draw_foreground_locked();
   virtual void draw_screen_locked();
+  virtual void draw_menu_and_text_buffer_locked(const std::vector<std::string>& help_message);
   virtual void update_screen_locked();
   virtual void update_progress_locked();
 
   GRSurface* GetCurrentFrame() const;
   GRSurface* GetCurrentText() const;
 
-  static void* ProgressThreadStartRoutine(void* data);
   void ProgressThreadLoop();
 
   virtual void ShowFile(FILE*);
@@ -134,7 +217,7 @@ class ScreenRecoveryUI : public RecoveryUI {
   // Draws a horizontal rule at Y. Returns the offset it should be moving along Y-axis.
   virtual int DrawHorizontalRule(int y) const;
   // Draws a line of text. Returns the offset it should be moving along Y-axis.
-  virtual int DrawTextLine(int x, int y, const char* line, bool bold) const;
+  virtual int DrawTextLine(int x, int y, const std::string& line, bool bold) const;
   // Draws surface portion (sx, sy, w, h) at screen location (dx, dy).
   virtual void DrawSurface(GRSurface* surface, int sx, int sy, int w, int h, int dx, int dy) const;
   // Draws rectangle at (x, y) - (x + w, y + h).
@@ -142,10 +225,11 @@ class ScreenRecoveryUI : public RecoveryUI {
   // Draws given surface (surface->pixel_bytes = 1) as text at (x, y).
   virtual void DrawTextIcon(int x, int y, GRSurface* surface) const;
   // Draws multiple text lines. Returns the offset it should be moving along Y-axis.
-  int DrawTextLines(int x, int y, const char* const* lines) const;
-  // Similar to DrawTextLines() to draw multiple text lines, but additionally wraps long lines.
-  // Returns the offset it should be moving along Y-axis.
-  int DrawWrappedTextLines(int x, int y, const char* const* lines) const;
+  int DrawTextLines(int x, int y, const std::vector<std::string>& lines) const;
+  // Similar to DrawTextLines() to draw multiple text lines, but additionally wraps long lines. It
+  // keeps symmetrical margins of 'x' at each end of a line. Returns the offset it should be moving
+  // along Y-axis.
+  int DrawWrappedTextLines(int x, int y, const std::vector<std::string>& lines) const;
 
   Icon currentIcon;
 
@@ -184,15 +268,16 @@ class ScreenRecoveryUI : public RecoveryUI {
   bool show_text;
   bool show_text_ever;  // has show_text ever been true?
 
-  std::vector<std::string> menu_;
-  const char* const* menu_headers_;
-  bool show_menu;
-  int menu_items, menu_sel;
+  std::vector<std::string> title_lines_;
+
+  bool scrollable_menu_;
+  std::unique_ptr<Menu> menu_;
 
   // An alternate text screen, swapped with 'text_' when we're viewing a log file.
   char** file_viewer_text_;
 
-  pthread_t progress_thread_;
+  std::thread progress_thread_;
+  std::atomic<bool> progress_thread_stopped_{ false };
 
   // Number of intro frames and loop frames in the animation.
   size_t intro_frames;
@@ -210,7 +295,7 @@ class ScreenRecoveryUI : public RecoveryUI {
   std::string locale_;
   bool rtl_locale_;
 
-  pthread_mutex_t updateMutex;
+  std::mutex updateMutex;
 
  private:
   void SetLocale(const std::string&);

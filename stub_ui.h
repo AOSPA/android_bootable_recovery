@@ -17,6 +17,10 @@
 #ifndef RECOVERY_STUB_UI_H
 #define RECOVERY_STUB_UI_H
 
+#include <functional>
+#include <string>
+#include <vector>
+
 #include "ui.h"
 
 // Stub implementation of RecoveryUI for devices without screen.
@@ -24,6 +28,9 @@ class StubRecoveryUI : public RecoveryUI {
  public:
   StubRecoveryUI() = default;
 
+  std::string GetLocale() const override {
+    return "";
+  }
   void SetBackground(Icon /* icon */) override {}
   void SetSystemUpdateText(bool /* security_update */) override {}
 
@@ -51,15 +58,17 @@ class StubRecoveryUI : public RecoveryUI {
     va_end(ap);
   }
   void PrintOnScreenOnly(const char* /* fmt */, ...) override {}
-  void ShowFile(const char* /* filename */) override {}
+  void ShowFile(const std::string& /* filename */) override {}
 
   // menu display
-  void StartMenu(const char* const* /* headers */, const char* const* /* items */,
-                 int /* initial_selection */) override {}
-  int SelectMenu(int sel) override {
-    return sel;
+  size_t ShowMenu(const std::vector<std::string>& /* headers */,
+                  const std::vector<std::string>& /* items */, size_t initial_selection,
+                  bool /* menu_only */,
+                  const std::function<int(int, bool)>& /* key_handler */) override {
+    return initial_selection;
   }
-  void EndMenu() override {}
+
+  void SetTitle(const std::vector<std::string>& /* lines */) override {}
 };
 
 #endif  // RECOVERY_STUB_UI_H

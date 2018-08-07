@@ -17,8 +17,8 @@
 #ifndef RECOVERY_COMMON_H
 #define RECOVERY_COMMON_H
 
-#include <stdio.h>
 #include <stdarg.h>
+#include <stdio.h>
 
 #include <string>
 
@@ -27,9 +27,12 @@
 static constexpr int kRecoveryApiVersion = 3;
 
 class RecoveryUI;
+struct selabel_handle;
 
+extern struct selabel_handle* sehandle;
 extern RecoveryUI* ui;
 extern bool modified_flash;
+extern bool has_cache;
 
 // The current stage, e.g. "1/2".
 extern std::string stage;
@@ -37,13 +40,8 @@ extern std::string stage;
 // The reason argument provided in "--reason=".
 extern const char* reason;
 
-// fopen a file, mounting volumes and making parent dirs as necessary.
-FILE* fopen_path(const char *path, const char *mode);
-
-void ui_print(const char* format, ...);
+void ui_print(const char* format, ...) __printflike(1, 2);
 
 bool is_ro_debuggable();
-
-bool reboot(const std::string& command);
 
 #endif  // RECOVERY_COMMON_H
