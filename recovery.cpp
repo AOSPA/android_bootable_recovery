@@ -49,7 +49,7 @@
 #include <android-base/unique_fd.h>
 #include <bootloader_message/bootloader_message.h>
 #include <cutils/properties.h> /* for property_list */
-#include <health2/Health.h>
+#include <healthhalutils/HealthHalUtils.h>
 #include <ziparchive/zip_archive.h>
 
 #include "adb_install.h"
@@ -326,6 +326,11 @@ static std::string browse_directory(const std::string& path, Device* device) {
         headers, entries, chosen_item, true,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
 
+    // Return if WaitKey() was interrupted.
+    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+      return "";
+    }
+
     const std::string& item = entries[chosen_item];
     if (chosen_item == 0) {
       // Go up but continue browsing (if the caller is browse_directory).
@@ -401,6 +406,11 @@ static bool prompt_and_wipe_data(Device* device) {
     size_t chosen_item = ui->ShowMenu(
         headers, items, 0, true,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+
+    // If ShowMenu() returned RecoveryUI::KeyError::INTERRUPTED, WaitKey() was interrupted.
+    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+      return false;
+    }
     if (chosen_item != 1) {
       return true;  // Just reboot, no wipe; not a failure, user asked for it
     }
@@ -597,6 +607,11 @@ static void choose_recovery_file(Device* device) {
     chosen_item = ui->ShowMenu(
         headers, entries, chosen_item, true,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+
+    // Handle WaitKey() interrupt.
+    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+      break;
+    }
     if (entries[chosen_item] == "Back") break;
 
     ui->ShowFile(entries[chosen_item]);
@@ -745,12 +760,16 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
     size_t chosen_item = ui->ShowMenu(
         {}, device->GetMenuItems(), 0, false,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
-
+    // Handle Interrupt key
+    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
+      return Device::KEY_INTERRUPTED;
+    }
     // Device-specific code may take some action here. It may return one of the core actions
     // handled in the switch statement below.
-    Device::BuiltinAction chosen_action = (chosen_item == static_cast<size_t>(-1))
-                                              ? Device::REBOOT
-                                              : device->InvokeMenuItem(chosen_item);
+    Device::BuiltinAction chosen_action =
+        (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::TIMED_OUT))
+            ? Device::REBOOT
+            : device->InvokeMenuItem(chosen_item);
 
     bool should_wipe_cache = false;
     switch (chosen_action) {
@@ -760,6 +779,8 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
       case Device::REBOOT:
       case Device::SHUTDOWN:
       case Device::REBOOT_BOOTLOADER:
+      case Device::ENTER_FASTBOOT:
+      case Device::ENTER_RECOVERY:
         return chosen_action;
 
       case Device::WIPE_DATA:
@@ -831,6 +852,9 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
           }
         }
         break;
+
+      case Device::KEY_INTERRUPTED:
+        return Device::KEY_INTERRUPTED;
     }
   }
 }
@@ -855,42 +879,29 @@ void ui_print(const char* format, ...) {
 
 static bool is_battery_ok(int* required_battery_level) {
   using android::hardware::health::V1_0::BatteryStatus;
+  using android::hardware::health::V2_0::get_health_service;
+  using android::hardware::health::V2_0::IHealth;
   using android::hardware::health::V2_0::Result;
   using android::hardware::health::V2_0::toString;
-  using android::hardware::health::V2_0::implementation::Health;
 
-  struct healthd_config healthd_config = {
-    .batteryStatusPath = android::String8(android::String8::kEmptyString),
-    .batteryHealthPath = android::String8(android::String8::kEmptyString),
-    .batteryPresentPath = android::String8(android::String8::kEmptyString),
-    .batteryCapacityPath = android::String8(android::String8::kEmptyString),
-    .batteryVoltagePath = android::String8(android::String8::kEmptyString),
-    .batteryTemperaturePath = android::String8(android::String8::kEmptyString),
-    .batteryTechnologyPath = android::String8(android::String8::kEmptyString),
-    .batteryCurrentNowPath = android::String8(android::String8::kEmptyString),
-    .batteryCurrentAvgPath = android::String8(android::String8::kEmptyString),
-    .batteryChargeCounterPath = android::String8(android::String8::kEmptyString),
-    .batteryFullChargePath = android::String8(android::String8::kEmptyString),
-    .batteryCycleCountPath = android::String8(android::String8::kEmptyString),
-    .energyCounter = nullptr,
-    .boot_min_cap = 0,
-    .screen_on = nullptr
-  };
-
-  auto health =
-      android::hardware::health::V2_0::implementation::Health::initInstance(&healthd_config);
+  android::sp<IHealth> health = get_health_service();
 
   static constexpr int BATTERY_READ_TIMEOUT_IN_SEC = 10;
   int wait_second = 0;
   while (true) {
     auto charge_status = BatteryStatus::UNKNOWN;
-    health
-        ->getChargeStatus([&charge_status](auto res, auto out_status) {
-          if (res == Result::SUCCESS) {
-            charge_status = out_status;
-          }
-        })
-        .isOk();  // should not have transport error
+
+    if (health == nullptr) {
+      LOG(WARNING) << "no health implementation is found, assuming defaults";
+    } else {
+      health
+          ->getChargeStatus([&charge_status](auto res, auto out_status) {
+            if (res == Result::SUCCESS) {
+              charge_status = out_status;
+            }
+          })
+          .isOk();  // should not have transport error
+    }
 
     // Treat unknown status as charged.
     bool charged = (charge_status != BatteryStatus::DISCHARGING &&
@@ -898,15 +909,17 @@ static bool is_battery_ok(int* required_battery_level) {
 
     Result res = Result::UNKNOWN;
     int32_t capacity = INT32_MIN;
-    health
-        ->getCapacity([&res, &capacity](auto out_res, auto out_capacity) {
-          res = out_res;
-          capacity = out_capacity;
-        })
-        .isOk();  // should not have transport error
+    if (health != nullptr) {
+      health
+          ->getCapacity([&res, &capacity](auto out_res, auto out_capacity) {
+            res = out_res;
+            capacity = out_capacity;
+          })
+          .isOk();  // should not have transport error
+    }
 
-    ui_print("charge_status %d, charged %d, status %s, capacity %" PRId32 "\n", charge_status,
-             charged, toString(res).c_str(), capacity);
+    LOG(INFO) << "charge_status " << toString(charge_status) << ", charged " << charged
+              << ", status " << toString(res) << ", capacity " << capacity;
     // At startup, the battery drivers in devices like N5X/N6P take some time to load
     // the battery profile. Before the load finishes, it reports value 50 as a fake
     // capacity. BATTERY_READ_TIMEOUT_IN_SEC is set that the battery drivers are expected
@@ -984,6 +997,7 @@ static void log_failure_code(ErrorCode code, const std::string& update_package) 
 
 Device::BuiltinAction start_recovery(Device* device, const std::vector<std::string>& args) {
   static constexpr struct option OPTIONS[] = {
+    { "fastboot", no_argument, nullptr, 0 },
     { "fsck_unshare_blocks", no_argument, nullptr, 0 },
     { "just_exit", no_argument, nullptr, 'x' },
     { "locale", required_argument, nullptr, 0 },
@@ -1038,7 +1052,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         std::string option = OPTIONS[option_index].name;
         if (option == "fsck_unshare_blocks") {
           fsck_unshare_blocks = true;
-        } else if (option == "locale") {
+        } else if (option == "locale" || option == "fastboot") {
           // Handled in recovery_main.cpp
         } else if (option == "prompt_and_wipe_data") {
           should_prompt_and_wipe_data = true;
@@ -1092,6 +1106,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   title_lines.insert(std::begin(title_lines), "Android Recovery");
   ui->SetTitle(title_lines);
 
+  ui->ResetKeyInterruptStatus();
   device->StartRecovery();
 
   printf("Command:");

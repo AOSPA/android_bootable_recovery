@@ -16,14 +16,48 @@ cc_defaults {
     name: "recovery_defaults",
 
     cflags: [
+        "-D_FILE_OFFSET_BITS=64",
+
+        // Must be the same as RECOVERY_API_VERSION.
+        "-DRECOVERY_API_VERSION=3",
+
         "-Wall",
         "-Werror",
+    ],
+}
+
+cc_library {
+    name: "librecovery_ui",
+    recovery_available: true,
+
+    defaults: [
+        "recovery_defaults",
+    ],
+
+    srcs: [
+        "device.cpp",
+        "screen_ui.cpp",
+        "ui.cpp",
+        "vr_ui.cpp",
+        "wear_ui.cpp"
+    ],
+
+    static_libs: [
+        "libminui",
+        "libotautil",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "libpng",
+        "libz",
     ],
 }
 
 // Generic device that uses ScreenRecoveryUI.
 cc_library_static {
     name: "librecovery_ui_default",
+    recovery_available: true,
 
     defaults: [
         "recovery_defaults",
@@ -37,6 +71,7 @@ cc_library_static {
 // The default wear device that uses WearRecoveryUI.
 cc_library_static {
     name: "librecovery_ui_wear",
+    recovery_available: true,
 
     defaults: [
         "recovery_defaults",
@@ -50,6 +85,7 @@ cc_library_static {
 // The default VR device that uses VrRecoveryUI.
 cc_library_static {
     name: "librecovery_ui_vr",
+    recovery_available: true,
 
     defaults: [
         "recovery_defaults",
@@ -61,7 +97,94 @@ cc_library_static {
 }
 
 cc_library_static {
+    name: "librecovery_fastboot",
+    recovery_available: true,
+    defaults: [
+        "recovery_defaults",
+    ],
+
+    srcs: [
+        "fastboot/fastboot.cpp",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "libbootloader_message",
+        "libcutils",
+        "liblog",
+    ],
+
+    static_libs: [
+        "librecovery_ui_default",
+    ],
+}
+
+cc_defaults {
+    name: "librecovery_defaults",
+
+    defaults: [
+        "recovery_defaults",
+    ],
+
+    shared_libs: [
+        "android.hardware.health@2.0",
+        "libbase",
+        "libbootloader_message",
+        "libcrypto",
+        "libcutils",
+        "libext4_utils",
+        "libfs_mgr",
+        "libfusesideload",
+        "libhidl-gen-utils",
+        "libhidlbase",
+        "libhidltransport",
+        "liblog",
+        "libpng",
+        "libselinux",
+        "libtinyxml2",
+        "libutils",
+        "libz",
+        "libziparchive",
+    ],
+
+    static_libs: [
+        "librecovery_fastboot",
+        "libminui",
+        "libverifier",
+        "libotautil",
+
+        // external dependencies
+        "libhealthhalutils",
+        "libvintf_recovery",
+        "libvintf",
+    ],
+}
+
+cc_library_static {
+    name: "librecovery",
+    recovery_available: true,
+
+    defaults: [
+        "librecovery_defaults",
+    ],
+
+    srcs: [
+        "adb_install.cpp",
+        "fsck_unshare_blocks.cpp",
+        "fuse_sdcard_provider.cpp",
+        "install.cpp",
+        "recovery.cpp",
+        "roots.cpp",
+    ],
+
+    include_dirs: [
+        "system/vold",
+    ],
+}
+
+cc_library_static {
     name: "libverifier",
+    recovery_available: true,
 
     defaults: [
         "recovery_defaults",
@@ -72,11 +195,46 @@ cc_library_static {
         "verifier.cpp",
     ],
 
-    static_libs: [
+    shared_libs: [
         "libbase",
         "libcrypto",
         "libcrypto_utils",
+    ],
+
+    static_libs: [
         "libotautil",
+    ],
+}
+
+cc_binary {
+    name: "recovery",
+    recovery: true,
+
+    defaults: [
+        "librecovery_defaults",
+    ],
+
+    srcs: [
+        "logging.cpp",
+        "recovery_main.cpp",
+    ],
+
+    shared_libs: [
+        "libminadbd_services",
+        "librecovery_ui",
+    ],
+
+    static_libs: [
+        "librecovery",
+        "librecovery_ui_default",
+    ],
+
+    required: [
+        "e2fsdroid.recovery",
+        "librecovery_ui_ext",
+        "mke2fs.conf.recovery",
+        "mke2fs.recovery",
+        "recovery_deps",
     ],
 }
 
@@ -131,5 +289,13 @@ cc_binary {
 
     init_rc: [
         "recovery-refresh.rc",
+    ],
+}
+
+filegroup {
+    name: "res-testdata",
+
+    srcs: [
+        "res-*/images/*_text.png",
     ],
 }

@@ -32,10 +32,10 @@
 
 static const std::string kLocale = "zu";
 
-static const std::vector<std::string> kResourceImagesDirs{ "res-mdpi/images/", "res-hdpi/images/",
-                                                           "res-xhdpi/images/",
-                                                           "res-xxhdpi/images/",
-                                                           "res-xxxhdpi/images/" };
+static const std::vector<std::string> kResourceImagesDirs{
+  "res-mdpi/images/",   "res-hdpi/images/",    "res-xhdpi/images/",
+  "res-xxhdpi/images/", "res-xxxhdpi/images/",
+};
 
 static int png_filter(const dirent* de) {
   if (de->d_type != DT_REG || !android::base::EndsWith(de->d_name, "_text.png")) {

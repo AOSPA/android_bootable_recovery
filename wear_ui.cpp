@@ -25,17 +25,22 @@
 #include <android-base/strings.h>
 #include <minui/minui.h>
 
+constexpr int kDefaultProgressBarBaseline = 259;
+constexpr int kDefaultMenuUnusableRows = 9;
+
 WearRecoveryUI::WearRecoveryUI()
     : ScreenRecoveryUI(true),
-      kProgressBarBaseline(RECOVERY_UI_PROGRESS_BAR_BASELINE),
-      kMenuUnusableRows(RECOVERY_UI_MENU_UNUSABLE_ROWS) {
-  // TODO: kMenuUnusableRows should be computed based on the lines in draw_screen_locked().
+      progress_bar_baseline_(android::base::GetIntProperty("ro.recovery.ui.progress_bar_baseline",
+                                                           kDefaultProgressBarBaseline)),
+      menu_unusable_rows_(android::base::GetIntProperty("ro.recovery.ui.menu_unusable_rows",
+                                                        kDefaultMenuUnusableRows)) {
+  // TODO: menu_unusable_rows_ should be computed based on the lines in draw_screen_locked().
 
   touch_screen_allowed_ = true;
 }
 
 int WearRecoveryUI::GetProgressBaseline() const {
-  return kProgressBarBaseline;
+  return progress_bar_baseline_;
 }
 
 // Draw background frame on the screen.  Does not flip pages.
@@ -53,6 +58,13 @@ void WearRecoveryUI::draw_background_locked() {
     int frame_x = (gr_fb_width() - frame_width) / 2;
     int frame_y = (gr_fb_height() - frame_height) / 2;
     gr_blit(frame, 0, 0, frame_width, frame_height, frame_x, frame_y);
+
+    // Draw recovery text on screen above progress bar.
+    GRSurface* text = GetCurrentText();
+    int text_x = (ScreenWidth() - gr_get_width(text)) / 2;
+    int text_y = GetProgressBaseline() - gr_get_height(text) - 10;
+    gr_color(255, 255, 255, 255);
+    gr_texticon(text_x, text_y, text);
   }
 }
 
@@ -87,7 +99,7 @@ void WearRecoveryUI::StartMenu(const std::vector<std::string>& headers,
                                const std::vector<std::string>& items, size_t initial_selection) {
   std::lock_guard<std::mutex> lg(updateMutex);
   if (text_rows_ > 0 && text_cols_ > 0) {
-    menu_ = std::make_unique<Menu>(scrollable_menu_, text_rows_ - kMenuUnusableRows - 1,
+    menu_ = std::make_unique<Menu>(scrollable_menu_, text_rows_ - menu_unusable_rows_ - 1,
                                    text_cols_ - 1, headers, items, initial_selection);
     update_screen_locked();
   }

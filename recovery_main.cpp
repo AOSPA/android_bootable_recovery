@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -29,15 +30,19 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/properties.h>
 #include <android-base/strings.h>
+#include <android-base/unique_fd.h>
 #include <bootloader_message/bootloader_message.h>
 #include <cutils/android_reboot.h>
+#include <cutils/sockets.h>
 #include <private/android_logger.h> /* private pmsg functions */
 #include <selinux/android.h>
 #include <selinux/label.h>
@@ -45,6 +50,7 @@
 
 #include "common.h"
 #include "device.h"
+#include "fastboot/fastboot.h"
 #include "logging.h"
 #include "minadbd/minadbd.h"
 #include "otautil/paths.h"
@@ -91,8 +97,13 @@ static std::vector<std::string> get_args(const int argc, char** const argv) {
   }
   stage = std::string(boot.stage);
 
+  std::string boot_command;
   if (boot.command[0] != 0) {
-    std::string boot_command = std::string(boot.command, sizeof(boot.command));
+    if (memchr(boot.command, '\0', sizeof(boot.command))) {
+      boot_command = std::string(boot.command);
+    } else {
+      boot_command = std::string(boot.command, sizeof(boot.command));
+    }
     LOG(INFO) << "Boot command: " << boot_command;
   }
 
@@ -143,6 +154,12 @@ static std::vector<std::string> get_args(const int argc, char** const argv) {
     LOG(ERROR) << "Failed to set BCB message: " << err;
   }
 
+  // Finally, if no arguments were specified, check whether we should boot
+  // into fastboot.
+  if (args.size() == 1 && boot_command == "boot-fastboot") {
+    args.emplace_back("--fastboot");
+  }
+
   return args;
 }
 
@@ -159,6 +176,44 @@ static std::string load_locale_from_cache() {
   }
 
   return android::base::Trim(content);
+}
+
+static void ListenRecoverySocket(RecoveryUI* ui, std::atomic<Device::BuiltinAction>& action) {
+  android::base::unique_fd sock_fd(android_get_control_socket("recovery"));
+  if (sock_fd < 0) {
+    PLOG(ERROR) << "Failed to open recovery socket";
+    return;
+  }
+  listen(sock_fd, 4);
+
+  while (true) {
+    android::base::unique_fd connection_fd;
+    connection_fd.reset(accept(sock_fd, nullptr, nullptr));
+    if (connection_fd < 0) {
+      PLOG(ERROR) << "Failed to accept socket connection";
+      continue;
+    }
+    char msg;
+    constexpr char kSwitchToFastboot = 'f';
+    constexpr char kSwitchToRecovery = 'r';
+    ssize_t ret = TEMP_FAILURE_RETRY(read(connection_fd, &msg, sizeof(msg)));
+    if (ret != sizeof(msg)) {
+      PLOG(ERROR) << "Couldn't read from socket";
+      continue;
+    }
+    switch (msg) {
+      case kSwitchToRecovery:
+        action = Device::BuiltinAction::ENTER_RECOVERY;
+        break;
+      case kSwitchToFastboot:
+        action = Device::BuiltinAction::ENTER_FASTBOOT;
+        break;
+      default:
+        LOG(ERROR) << "Unrecognized char from socket " << msg;
+        continue;
+    }
+    ui->InterruptKey();
+  }
 }
 
 static void redirect_stdio(const char* filename) {
@@ -250,6 +305,11 @@ static void redirect_stdio(const char* filename) {
   }
 }
 
+static bool SetUsbConfig(const std::string& state) {
+  android::base::SetProperty("sys.usb.config", state);
+  return android::base::WaitForProperty("sys.usb.state", state);
+}
+
 int main(int argc, char** argv) {
   // We don't have logcat yet under recovery; so we'll print error on screen and log to stdout
   // (which is redirected to recovery.log) as we used to do.
@@ -280,8 +340,6 @@ int main(int argc, char** argv) {
   // instances with different timestamps.
   redirect_stdio(Paths::Get().temporary_log_file().c_str());
 
-  printf("Starting recovery (pid %d) on %s", getpid(), ctime(&start));
-
   load_volume_table();
   has_cache = volume_for_mount_point(CACHE_ROOT) != nullptr;
 
@@ -289,12 +347,14 @@ int main(int argc, char** argv) {
   auto args_to_parse = StringVectorToNullTerminatedArray(args);
 
   static constexpr struct option OPTIONS[] = {
+    { "fastboot", no_argument, nullptr, 0 },
     { "locale", required_argument, nullptr, 0 },
     { "show_text", no_argument, nullptr, 't' },
     { nullptr, 0, nullptr, 0 },
   };
 
   bool show_text = false;
+  bool fastboot = false;
   std::string locale;
 
   int arg;
@@ -309,6 +369,8 @@ int main(int argc, char** argv) {
         std::string option = OPTIONS[option_index].name;
         if (option == "locale") {
           locale = optarg;
+        } else if (option == "fastboot") {
+          fastboot = true;
         }
         break;
       }
@@ -327,9 +389,32 @@ int main(int argc, char** argv) {
     }
   }
 
-  printf("locale is [%s]\n", locale.c_str());
+  static constexpr const char* kDefaultLibRecoveryUIExt = "librecovery_ui_ext.so";
+  // Intentionally not calling dlclose(3) to avoid potential gotchas (e.g. `make_device` may have
+  // handed out pointers to code or static [or thread-local] data and doesn't collect them all back
+  // in on dlclose).
+  void* librecovery_ui_ext = dlopen(kDefaultLibRecoveryUIExt, RTLD_NOW);
 
-  Device* device = make_device();
+  using MakeDeviceType = decltype(&make_device);
+  MakeDeviceType make_device_func = nullptr;
+  if (librecovery_ui_ext == nullptr) {
+    printf("Failed to dlopen %s: %s\n", kDefaultLibRecoveryUIExt, dlerror());
+  } else {
+    reinterpret_cast<void*&>(make_device_func) = dlsym(librecovery_ui_ext, "make_device");
+    if (make_device_func == nullptr) {
+      printf("Failed to dlsym make_device: %s\n", dlerror());
+    }
+  }
+
+  Device* device;
+  if (make_device_func == nullptr) {
+    printf("Falling back to the default make_device() instead\n");
+    device = make_device();
+  } else {
+    printf("Loading make_device from %s\n", kDefaultLibRecoveryUIExt);
+    device = (*make_device_func)();
+  }
+
   if (android::base::GetBoolProperty("ro.boot.quiescent", false)) {
     printf("Quiescent recovery mode.\n");
     device->ResetUI(new StubRecoveryUI());
@@ -348,33 +433,67 @@ int main(int argc, char** argv) {
   ui->SetBackground(RecoveryUI::NONE);
   if (show_text) ui->ShowText(true);
 
+  LOG(INFO) << "Starting recovery (pid " << getpid() << ") on " << ctime(&start);
+  LOG(INFO) << "locale is [" << locale << "]";
+
   sehandle = selinux_android_file_context_handle();
   selinux_android_set_sehandle(sehandle);
   if (!sehandle) {
     ui->Print("Warning: No file_contexts\n");
   }
 
-  Device::BuiltinAction after = start_recovery(device, args);
+  std::atomic<Device::BuiltinAction> action;
+  std::thread listener_thread(ListenRecoverySocket, ui, std::ref(action));
+  listener_thread.detach();
 
-  switch (after) {
-    case Device::SHUTDOWN:
-      ui->Print("Shutting down...\n");
-      android::base::SetProperty(ANDROID_RB_PROPERTY, "shutdown,");
-      break;
-
-    case Device::REBOOT_BOOTLOADER:
-      ui->Print("Rebooting to bootloader...\n");
-      android::base::SetProperty(ANDROID_RB_PROPERTY, "reboot,bootloader");
-      break;
-
-    default:
-      ui->Print("Rebooting...\n");
-      reboot("reboot,");
-      break;
-  }
   while (true) {
-    pause();
+    std::string usb_config = fastboot ? "fastboot" : is_ro_debuggable() ? "adb" : "none";
+    std::string usb_state = android::base::GetProperty("sys.usb.state", "none");
+    if (usb_config != usb_state) {
+      if (!SetUsbConfig("none")) {
+        LOG(ERROR) << "Failed to clear USB config";
+      }
+      if (!SetUsbConfig(usb_config)) {
+        LOG(ERROR) << "Failed to set USB config to " << usb_config;
+      }
+    }
+
+    auto ret = fastboot ? StartFastboot(device, args) : start_recovery(device, args);
+
+    if (ret == Device::KEY_INTERRUPTED) {
+      ret = action.exchange(ret);
+      if (ret == Device::NO_ACTION) {
+        continue;
+      }
+    }
+    switch (ret) {
+      case Device::SHUTDOWN:
+        ui->Print("Shutting down...\n");
+        android::base::SetProperty(ANDROID_RB_PROPERTY, "shutdown,");
+        break;
+
+      case Device::REBOOT_BOOTLOADER:
+        ui->Print("Rebooting to bootloader...\n");
+        android::base::SetProperty(ANDROID_RB_PROPERTY, "reboot,bootloader");
+        break;
+
+      case Device::ENTER_FASTBOOT:
+        LOG(INFO) << "Entering fastboot";
+        fastboot = true;
+        break;
+
+      case Device::ENTER_RECOVERY:
+        LOG(INFO) << "Entering recovery";
+        fastboot = false;
+        break;
+
+      default:
+        ui->Print("Rebooting...\n");
+        reboot("reboot,");
+        break;
+    }
   }
+
   // Should be unreachable.
   return EXIT_SUCCESS;
 }
