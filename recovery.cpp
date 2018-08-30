@@ -1442,6 +1442,13 @@ int main(int argc, char **argv) {
   int retry_count = 0;
   bool security_update = false;
 
+  if (has_cache && ensure_path_mounted(CACHE_ROOT) == 0) {
+  //Create /cache/recovery specifically if it is not created
+  //As in cases where device is booted into recovery directly after
+  //flashing recovery folder is not created in init
+    mkdir_recursively(CACHE_LOG_DIR, 0777, false, sehandle);
+  }
+
   int arg;
   int option_index;
   while ((arg = getopt_long(args_to_parse.size(), args_to_parse.data(), "", OPTIONS,
