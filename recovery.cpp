@@ -286,6 +286,12 @@ static bool erase_volume(const char* volume) {
   return (result == 0);
 }
 
+// Sets the usb config to 'state'
+bool SetUsbConfig(const std::string& state) {
+  android::base::SetProperty("sys.usb.config", state);
+  return android::base::WaitForProperty("sys.usb.state", state);
+}
+
 // Returns the selected filename, or an empty string.
 static std::string browse_directory(const std::string& path, Device* device) {
   ensure_path_mounted(path.c_str());
@@ -388,7 +394,7 @@ static bool wipe_data(Device* device) {
     return success;
 }
 
-static bool prompt_and_wipe_data(Device* device) {
+static InstallResult prompt_and_wipe_data(Device* device) {
   // Use a single string and let ScreenRecoveryUI handles the wrapping.
   std::vector<std::string> headers{
     "Can't load Android system. Your data may be corrupt. "
@@ -409,13 +415,17 @@ static bool prompt_and_wipe_data(Device* device) {
 
     // If ShowMenu() returned RecoveryUI::KeyError::INTERRUPTED, WaitKey() was interrupted.
     if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
-      return false;
+      return INSTALL_KEY_INTERRUPTED;
     }
     if (chosen_item != 1) {
-      return true;  // Just reboot, no wipe; not a failure, user asked for it
+      return INSTALL_SUCCESS;  // Just reboot, no wipe; not a failure, user asked for it
     }
     if (ask_to_wipe_data(device)) {
-      return wipe_data(device);
+      if (wipe_data(device)) {
+        return INSTALL_SUCCESS;
+      } else {
+        return INSTALL_ERROR;
+      }
     }
   }
 }
@@ -1186,12 +1196,15 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
       status = INSTALL_ERROR;
     }
   } else if (should_prompt_and_wipe_data) {
+    // Trigger the logging to capture the cause, even if user chooses to not wipe data.
+    modified_flash = true;
+
     ui->ShowText(true);
     ui->SetBackground(RecoveryUI::ERROR);
-    if (!prompt_and_wipe_data(device)) {
-      status = INSTALL_ERROR;
+    status = prompt_and_wipe_data(device);
+    if (status != INSTALL_KEY_INTERRUPTED) {
+      ui->ShowText(false);
     }
-    ui->ShowText(false);
   } else if (should_wipe_cache) {
     if (!wipe_cache(false, device)) {
       status = INSTALL_ERROR;
