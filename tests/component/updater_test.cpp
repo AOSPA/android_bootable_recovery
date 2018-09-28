@@ -37,6 +37,7 @@
 #include <brotli/encode.h>
 #include <bsdiff/bsdiff.h>
 #include <gtest/gtest.h>
+#include <verity/hash_tree_builder.h>
 #include <ziparchive/zip_archive.h>
 #include <ziparchive/zip_writer.h>
 
@@ -54,8 +55,6 @@
 using namespace std::string_literals;
 
 using PackageEntries = std::unordered_map<std::string, std::string>;
-
-static constexpr size_t kTransferListHeaderLines = 4;
 
 struct selabel_handle* sehandle = nullptr;
 
@@ -222,7 +221,7 @@ TEST_F(UpdaterTest, apply_patch_check) {
   // File not found.
   expect("", "apply_patch_check(\"/doesntexist\")", kNoCause);
 
-  std::string src_file = from_testdata_base("old.file");
+  std::string src_file = from_testdata_base("boot.img");
   std::string src_content;
   ASSERT_TRUE(android::base::ReadFileToString(src_file, &src_content));
   size_t src_size = src_content.size();
@@ -387,6 +386,86 @@ TEST_F(UpdaterTest, read_file) {
   // It should fail gracefully when read fails.
   script = "read_file(\"/doesntexist\")";
   expect("", script, kNoCause);
+}
+
+TEST_F(UpdaterTest, compute_hash_tree_smoke) {
+  std::string data;
+  for (unsigned char i = 0; i < 128; i++) {
+    data += std::string(4096, i);
+  }
+  // Appends an additional block for verity data.
+  data += std::string(4096, 0);
+  ASSERT_EQ(129 * 4096, data.size());
+  ASSERT_TRUE(android::base::WriteStringToFile(data, image_file_));
+
+  std::string salt = "aee087a5be3b982978c923f566a94613496b417f2af592639bc80d141e34dfe7";
+  std::string expected_root_hash =
+      "7e0a8d8747f54384014ab996f5b2dc4eb7ff00c630eede7134c9e3f05c0dd8ca";
+  // hash_tree_ranges, source_ranges, hash_algorithm, salt_hex, root_hash
+  std::vector<std::string> tokens{ "compute_hash_tree", "2,128,129", "2,0,128", "sha256", salt,
+                                   expected_root_hash };
+  std::string hash_tree_command = android::base::Join(tokens, " ");
+
+  std::vector<std::string> transfer_list{
+    "4", "2", "0", "2", hash_tree_command,
+  };
+
+  PackageEntries entries{
+    { "new_data", "" },
+    { "patch_data", "" },
+    { "transfer_list", android::base::Join(transfer_list, "\n") },
+  };
+
+  RunBlockImageUpdate(false, entries, image_file_, "t");
+
+  std::string updated;
+  ASSERT_TRUE(android::base::ReadFileToString(image_file_, &updated));
+  ASSERT_EQ(129 * 4096, updated.size());
+  ASSERT_EQ(data.substr(0, 128 * 4096), updated.substr(0, 128 * 4096));
+
+  // Computes the SHA256 of the salt + hash_tree_data and expects the result to match with the
+  // root_hash.
+  std::vector<unsigned char> salt_bytes;
+  ASSERT_TRUE(HashTreeBuilder::ParseBytesArrayFromString(salt, &salt_bytes));
+  std::vector<unsigned char> hash_tree = std::move(salt_bytes);
+  hash_tree.insert(hash_tree.end(), updated.begin() + 128 * 4096, updated.end());
+
+  std::vector<unsigned char> digest(SHA256_DIGEST_LENGTH);
+  SHA256(hash_tree.data(), hash_tree.size(), digest.data());
+  ASSERT_EQ(expected_root_hash, HashTreeBuilder::BytesArrayToString(digest));
+}
+
+TEST_F(UpdaterTest, compute_hash_tree_root_mismatch) {
+  std::string data;
+  for (size_t i = 0; i < 128; i++) {
+    data += std::string(4096, i);
+  }
+  // Appends an additional block for verity data.
+  data += std::string(4096, 0);
+  ASSERT_EQ(129 * 4096, data.size());
+  // Corrupts one bit
+  data[4096] = 'A';
+  ASSERT_TRUE(android::base::WriteStringToFile(data, image_file_));
+
+  std::string salt = "aee087a5be3b982978c923f566a94613496b417f2af592639bc80d141e34dfe7";
+  std::string expected_root_hash =
+      "7e0a8d8747f54384014ab996f5b2dc4eb7ff00c630eede7134c9e3f05c0dd8ca";
+  // hash_tree_ranges, source_ranges, hash_algorithm, salt_hex, root_hash
+  std::vector<std::string> tokens{ "compute_hash_tree", "2,128,129", "2,0,128", "sha256", salt,
+                                   expected_root_hash };
+  std::string hash_tree_command = android::base::Join(tokens, " ");
+
+  std::vector<std::string> transfer_list{
+    "4", "2", "0", "2", hash_tree_command,
+  };
+
+  PackageEntries entries{
+    { "new_data", "" },
+    { "patch_data", "" },
+    { "transfer_list", android::base::Join(transfer_list, "\n") },
+  };
+
+  RunBlockImageUpdate(false, entries, image_file_, "", kHashTreeComputationFailure);
 }
 
 TEST_F(UpdaterTest, write_value) {
@@ -765,7 +844,8 @@ TEST_F(UpdaterTest, last_command_update) {
   };
 
   // "2\nstash " + block3_hash + " 2,2,3"
-  std::string last_command_content = "2\n" + transfer_list_fail[kTransferListHeaderLines + 2];
+  std::string last_command_content =
+      "2\n" + transfer_list_fail[TransferList::kTransferListHeaderLines + 2];
 
   RunBlockImageUpdate(false, entries, image_file_, "");
 
@@ -814,7 +894,8 @@ TEST_F(UpdaterTest, last_command_update_unresumable) {
 
   ASSERT_TRUE(android::base::WriteStringToFile(block1 + block1, image_file_));
 
-  std::string last_command_content = "0\n" + transfer_list_unresumable[kTransferListHeaderLines];
+  std::string last_command_content =
+      "0\n" + transfer_list_unresumable[TransferList::kTransferListHeaderLines];
   ASSERT_TRUE(android::base::WriteStringToFile(last_command_content, last_command_file_));
 
   RunBlockImageUpdate(false, entries, image_file_, "");
@@ -853,7 +934,8 @@ TEST_F(UpdaterTest, last_command_verify) {
   ASSERT_TRUE(android::base::WriteStringToFile(block1 + block1 + block3, image_file_));
 
   // Last command: "move " + block1_hash + " 2,1,2 1 2,0,1"
-  std::string last_command_content = "2\n" + transfer_list_verify[kTransferListHeaderLines + 2];
+  std::string last_command_content =
+      "2\n" + transfer_list_verify[TransferList::kTransferListHeaderLines + 2];
 
   // First run: expect the verification to succeed and the last_command_file is intact.
   ASSERT_TRUE(android::base::WriteStringToFile(last_command_content, last_command_file_));
@@ -1048,16 +1130,17 @@ static const std::vector<std::string> g_transfer_list = GenerateTransferList();
 
 INSTANTIATE_TEST_CASE_P(InterruptAfterEachCommand, ResumableUpdaterTest,
                         ::testing::Range(static_cast<size_t>(0),
-                                         g_transfer_list.size() - kTransferListHeaderLines));
+                                         g_transfer_list.size() -
+                                             TransferList::kTransferListHeaderLines));
 
 TEST_P(ResumableUpdaterTest, InterruptVerifyResume) {
   ASSERT_TRUE(android::base::WriteStringToFile(g_source_image, image_file_));
 
   LOG(INFO) << "Interrupting at line " << index_ << " ("
-            << g_transfer_list[kTransferListHeaderLines + index_] << ")";
+            << g_transfer_list[TransferList::kTransferListHeaderLines + index_] << ")";
 
   std::vector<std::string> transfer_list_copy{ g_transfer_list };
-  transfer_list_copy[kTransferListHeaderLines + index_] = "abort";
+  transfer_list_copy[TransferList::kTransferListHeaderLines + index_] = "abort";
 
   g_entries["transfer_list"] = android::base::Join(transfer_list_copy, '\n');
 
@@ -1070,8 +1153,8 @@ TEST_P(ResumableUpdaterTest, InterruptVerifyResume) {
   if (index_ == 0) {
     ASSERT_EQ(-1, access(last_command_file_.c_str(), R_OK));
   } else {
-    last_command_expected =
-        std::to_string(index_ - 1) + "\n" + g_transfer_list[kTransferListHeaderLines + index_ - 1];
+    last_command_expected = std::to_string(index_ - 1) + "\n" +
+                            g_transfer_list[TransferList::kTransferListHeaderLines + index_ - 1];
     std::string last_command_actual;
     ASSERT_TRUE(android::base::ReadFileToString(last_command_file_, &last_command_actual));
     ASSERT_EQ(last_command_expected, last_command_actual);

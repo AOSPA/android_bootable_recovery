@@ -14,7 +14,7 @@
 
 LOCAL_PATH := $(call my-dir)
 
-# Needed by build/make/core/Makefile.
+# Needed by build/make/core/Makefile. Must be consistent with the value in Android.bp.
 RECOVERY_API_VERSION := 3
 RECOVERY_FSTAB_VERSION := 2
 
@@ -23,176 +23,37 @@ RECOVERY_FSTAB_VERSION := 2
 # librecovery_ui_default, which uses ScreenRecoveryUI.
 TARGET_RECOVERY_UI_LIB ?= librecovery_ui_default
 
-recovery_common_cflags := \
-    -Wall \
-    -Werror \
-    -DRECOVERY_API_VERSION=$(RECOVERY_API_VERSION)
-
-# librecovery_ui (static library)
-# ===============================
+# librecovery_ui_ext (shared library)
+# ===================================
 include $(CLEAR_VARS)
-LOCAL_SRC_FILES := \
-    device.cpp \
-    screen_ui.cpp \
-    ui.cpp \
-    vr_ui.cpp \
-    wear_ui.cpp
 
-LOCAL_MODULE := librecovery_ui
+LOCAL_MODULE := librecovery_ui_ext
 
-LOCAL_STATIC_LIBRARIES := \
-    libminui \
-    libotautil \
-    libbase
+# LOCAL_MODULE_PATH for shared libraries is unsupported in multiarch builds.
+LOCAL_MULTILIB := first
 
-LOCAL_CFLAGS := $(recovery_common_cflags)
-
-ifneq ($(TARGET_RECOVERY_UI_MARGIN_HEIGHT),)
-LOCAL_CFLAGS += -DRECOVERY_UI_MARGIN_HEIGHT=$(TARGET_RECOVERY_UI_MARGIN_HEIGHT)
+ifeq ($(TARGET_IS_64_BIT),true)
+LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/system/lib64
 else
-LOCAL_CFLAGS += -DRECOVERY_UI_MARGIN_HEIGHT=0
+LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/system/lib
 endif
 
-ifneq ($(TARGET_RECOVERY_UI_MARGIN_WIDTH),)
-LOCAL_CFLAGS += -DRECOVERY_UI_MARGIN_WIDTH=$(TARGET_RECOVERY_UI_MARGIN_WIDTH)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_MARGIN_WIDTH=0
-endif
+LOCAL_WHOLE_STATIC_LIBRARIES := \
+    $(TARGET_RECOVERY_UI_LIB)
 
-ifneq ($(TARGET_RECOVERY_UI_TOUCH_LOW_THRESHOLD),)
-LOCAL_CFLAGS += -DRECOVERY_UI_TOUCH_LOW_THRESHOLD=$(TARGET_RECOVERY_UI_TOUCH_LOW_THRESHOLD)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_TOUCH_LOW_THRESHOLD=50
-endif
-
-ifneq ($(TARGET_RECOVERY_UI_TOUCH_HIGH_THRESHOLD),)
-LOCAL_CFLAGS += -DRECOVERY_UI_TOUCH_HIGH_THRESHOLD=$(TARGET_RECOVERY_UI_TOUCH_HIGH_THRESHOLD)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_TOUCH_HIGH_THRESHOLD=90
-endif
-
-ifneq ($(TARGET_RECOVERY_UI_PROGRESS_BAR_BASELINE),)
-LOCAL_CFLAGS += -DRECOVERY_UI_PROGRESS_BAR_BASELINE=$(TARGET_RECOVERY_UI_PROGRESS_BAR_BASELINE)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_PROGRESS_BAR_BASELINE=259
-endif
-
-ifneq ($(TARGET_RECOVERY_UI_ANIMATION_FPS),)
-LOCAL_CFLAGS += -DRECOVERY_UI_ANIMATION_FPS=$(TARGET_RECOVERY_UI_ANIMATION_FPS)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_ANIMATION_FPS=30
-endif
-
-ifneq ($(TARGET_RECOVERY_UI_MENU_UNUSABLE_ROWS),)
-LOCAL_CFLAGS += -DRECOVERY_UI_MENU_UNUSABLE_ROWS=$(TARGET_RECOVERY_UI_MENU_UNUSABLE_ROWS)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_MENU_UNUSABLE_ROWS=9
-endif
-
-ifneq ($(TARGET_RECOVERY_UI_VR_STEREO_OFFSET),)
-LOCAL_CFLAGS += -DRECOVERY_UI_VR_STEREO_OFFSET=$(TARGET_RECOVERY_UI_VR_STEREO_OFFSET)
-else
-LOCAL_CFLAGS += -DRECOVERY_UI_VR_STEREO_OFFSET=0
-endif
-
-include $(BUILD_STATIC_LIBRARY)
-
-# Health HAL dependency
-health_hal_static_libraries := \
-    android.hardware.health@2.0-impl \
-    android.hardware.health@2.0 \
-    android.hardware.health@1.0 \
-    android.hardware.health@1.0-convert \
-    libhealthstoragedefault \
-    libhidltransport \
-    libhidlbase \
-    libhwbinder_noltopgo \
-    libvndksupport \
-    libbatterymonitor
-
-librecovery_static_libraries := \
-    $(TARGET_RECOVERY_UI_LIB) \
-    libbootloader_message \
-    libfusesideload \
-    libminadbd \
-    librecovery_ui \
-    libminui \
-    libverifier \
-    libotautil \
-    $(health_hal_static_libraries) \
-    libasyncio \
-    libcrypto_utils \
-    libcrypto \
-    libext4_utils \
-    libfs_mgr \
-    libpng \
-    libsparse \
-    libvintf_recovery \
-    libvintf \
-    libhidl-gen-utils \
-    libtinyxml2 \
-    libziparchive \
+LOCAL_SHARED_LIBRARIES := \
     libbase \
-    libutils \
-    libcutils \
     liblog \
-    libselinux \
-    libz \
+    librecovery_ui.recovery
 
-# librecovery (static library)
-# ===============================
+include $(BUILD_SHARED_LIBRARY)
+
+# recovery_deps: A phony target that's depended on by `recovery`, which
+# builds additional modules conditionally based on Makefile variables.
+# ======================================================================
 include $(CLEAR_VARS)
 
-LOCAL_SRC_FILES := \
-    adb_install.cpp \
-    fsck_unshare_blocks.cpp \
-    fuse_sdcard_provider.cpp \
-    install.cpp \
-    recovery.cpp \
-    roots.cpp \
-
-LOCAL_C_INCLUDES := \
-    system/vold \
-
-LOCAL_CFLAGS := $(recovery_common_cflags)
-
-LOCAL_MODULE := librecovery
-
-LOCAL_STATIC_LIBRARIES := \
-    $(librecovery_static_libraries)
-
-include $(BUILD_STATIC_LIBRARY)
-
-# recovery (static executable)
-# ===============================
-include $(CLEAR_VARS)
-
-LOCAL_SRC_FILES := \
-    logging.cpp \
-    recovery_main.cpp \
-
-LOCAL_MODULE := recovery
-
-LOCAL_FORCE_STATIC_EXECUTABLE := true
-
-LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/sbin
-
-# Cannot link with LLD: undefined symbol: UsbNoPermissionsLongHelpText
-# http://b/77543887, lld does not handle -Wl,--gc-sections as well as ld.
-LOCAL_USE_CLANG_LLD := false
-
-LOCAL_CFLAGS := $(recovery_common_cflags)
-
-LOCAL_STATIC_LIBRARIES := \
-    librecovery \
-    $(librecovery_static_libraries)
-
-LOCAL_HAL_STATIC_LIBRARIES := libhealthd
-
-LOCAL_REQUIRED_MODULES := \
-    e2fsdroid.recovery \
-    mke2fs.recovery \
-    mke2fs.conf
+LOCAL_MODULE := recovery_deps
 
 ifeq ($(TARGET_USERIMAGES_USE_F2FS),true)
 ifeq ($(HOST_OS),linux)
@@ -205,7 +66,8 @@ endif
 # e2fsck is needed for adb remount -R.
 ifeq ($(BOARD_EXT4_SHARE_DUP_BLOCKS),true)
 ifneq (,$(filter userdebug eng,$(TARGET_BUILD_VARIANT)))
-LOCAL_REQUIRED_MODULES += e2fsck_static
+LOCAL_REQUIRED_MODULES += \
+    e2fsck_static
 endif
 endif
 
@@ -215,11 +77,7 @@ LOCAL_REQUIRED_MODULES += \
     recovery-refresh
 endif
 
-include $(BUILD_EXECUTABLE)
+include $(BUILD_PHONY_PACKAGE)
 
 include \
-    $(LOCAL_PATH)/boot_control/Android.mk \
-    $(LOCAL_PATH)/minui/Android.mk \
-    $(LOCAL_PATH)/tests/Android.mk \
     $(LOCAL_PATH)/updater/Android.mk \
-    $(LOCAL_PATH)/updater_sample/Android.mk \

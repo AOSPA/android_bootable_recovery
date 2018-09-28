@@ -16,6 +16,10 @@
 
 #include "private/commands.h"
 
+#include <stdint.h>
+#include <string.h>
+
+#include <functional>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -24,12 +28,22 @@
 #include <android-base/parseint.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
+#include <openssl/sha.h>
 
+#include "otautil/print_sha1.h"
 #include "otautil/rangeset.h"
 
 using namespace std::string_literals;
 
 bool Command::abort_allowed_ = false;
+
+Command::Command(Type type, size_t index, std::string cmdline, HashTreeInfo hash_tree_info)
+    : type_(type),
+      index_(index),
+      cmdline_(std::move(cmdline)),
+      hash_tree_info_(std::move(hash_tree_info)) {
+  CHECK(type == Type::COMPUTE_HASH_TREE);
+}
 
 Command::Type Command::ParseType(const std::string& type_str) {
   if (type_str == "abort") {
@@ -40,6 +54,8 @@ Command::Type Command::ParseType(const std::string& type_str) {
     return Type::ABORT;
   } else if (type_str == "bsdiff") {
     return Type::BSDIFF;
+  } else if (type_str == "compute_hash_tree") {
+    return Type::COMPUTE_HASH_TREE;
   } else if (type_str == "erase") {
     return Type::ERASE;
   } else if (type_str == "free") {
@@ -252,12 +268,109 @@ Command Command::Parse(const std::string& line, size_t index, std::string* err) 
                                          tokens.size() - pos);
       return {};
     }
+  } else if (op == Type::COMPUTE_HASH_TREE) {
+    // <hash_tree_ranges> <source_ranges> <hash_algorithm> <salt_hex> <root_hash>
+    if (pos + 5 != tokens.size()) {
+      *err = android::base::StringPrintf("invalid number of args: %zu (expected 5)",
+                                         tokens.size() - pos);
+      return {};
+    }
+
+    // Expects the hash_tree data to be contiguous.
+    RangeSet hash_tree_ranges = RangeSet::Parse(tokens[pos++]);
+    if (!hash_tree_ranges || hash_tree_ranges.size() != 1) {
+      *err = "invalid hash tree ranges in: " + line;
+      return {};
+    }
+
+    RangeSet source_ranges = RangeSet::Parse(tokens[pos++]);
+    if (!source_ranges) {
+      *err = "invalid source ranges in: " + line;
+      return {};
+    }
+
+    std::string hash_algorithm = tokens[pos++];
+    std::string salt_hex = tokens[pos++];
+    std::string root_hash = tokens[pos++];
+    if (hash_algorithm.empty() || salt_hex.empty() || root_hash.empty()) {
+      *err = "invalid hash tree arguments in " + line;
+      return {};
+    }
+
+    HashTreeInfo hash_tree_info(std::move(hash_tree_ranges), std::move(source_ranges),
+                                std::move(hash_algorithm), std::move(salt_hex),
+                                std::move(root_hash));
+    return Command(op, index, line, std::move(hash_tree_info));
   } else {
     *err = "invalid op";
     return {};
   }
 
   return Command(op, index, line, patch_info, target_info, source_info, stash_info);
+}
+
+bool SourceInfo::Overlaps(const TargetInfo& target) const {
+  return ranges_.Overlaps(target.ranges());
+}
+
+// Moves blocks in the 'source' vector to the specified locations (as in 'locs') in the 'dest'
+// vector. Note that source and dest may be the same buffer.
+static void MoveRange(std::vector<uint8_t>* dest, const RangeSet& locs,
+                      const std::vector<uint8_t>& source, size_t block_size) {
+  const uint8_t* from = source.data();
+  uint8_t* to = dest->data();
+  size_t start = locs.blocks();
+  // Must do the movement backward.
+  for (auto it = locs.crbegin(); it != locs.crend(); it++) {
+    size_t blocks = it->second - it->first;
+    start -= blocks;
+    memmove(to + (it->first * block_size), from + (start * block_size), blocks * block_size);
+  }
+}
+
+bool SourceInfo::ReadAll(
+    std::vector<uint8_t>* buffer, size_t block_size,
+    const std::function<int(const RangeSet&, std::vector<uint8_t>*)>& block_reader,
+    const std::function<int(const std::string&, std::vector<uint8_t>*)>& stash_reader) const {
+  if (buffer->size() < blocks() * block_size) {
+    return false;
+  }
+
+  // Read in the source ranges.
+  if (ranges_) {
+    if (block_reader(ranges_, buffer) != 0) {
+      return false;
+    }
+    if (location_) {
+      MoveRange(buffer, location_, *buffer, block_size);
+    }
+  }
+
+  // Read in the stashes.
+  for (const StashInfo& stash : stashes_) {
+    std::vector<uint8_t> stash_buffer(stash.blocks() * block_size);
+    if (stash_reader(stash.id(), &stash_buffer) != 0) {
+      return false;
+    }
+    MoveRange(buffer, stash.ranges(), stash_buffer, block_size);
+  }
+  return true;
+}
+
+void SourceInfo::DumpBuffer(const std::vector<uint8_t>& buffer, size_t block_size) const {
+  LOG(INFO) << "Dumping hashes in hex for " << ranges_.blocks() << " source blocks";
+
+  const RangeSet& location = location_ ? location_ : RangeSet({ Range{ 0, ranges_.blocks() } });
+  for (size_t i = 0; i < ranges_.blocks(); i++) {
+    size_t block_num = ranges_.GetBlockNumber(i);
+    size_t buffer_index = location.GetBlockNumber(i);
+    CHECK_LE((buffer_index + 1) * block_size, buffer.size());
+
+    uint8_t digest[SHA_DIGEST_LENGTH];
+    SHA1(buffer.data() + buffer_index * block_size, block_size, digest);
+    std::string hexdigest = print_sha1(digest);
+    LOG(INFO) << "  block number: " << block_num << ", SHA-1: " << hexdigest;
+  }
 }
 
 std::ostream& operator<<(std::ostream& os, const Command& command) {
@@ -287,4 +400,55 @@ std::ostream& operator<<(std::ostream& os, const SourceInfo& source) {
     os << " " << source.stashes_.size() << " stash(es)";
   }
   return os;
+}
+
+TransferList TransferList::Parse(const std::string& transfer_list_str, std::string* err) {
+  TransferList result{};
+
+  std::vector<std::string> lines = android::base::Split(transfer_list_str, "\n");
+  if (lines.size() < kTransferListHeaderLines) {
+    *err = android::base::StringPrintf("too few lines in the transfer list [%zu]", lines.size());
+    return TransferList{};
+  }
+
+  // First line in transfer list is the version number.
+  if (!android::base::ParseInt(lines[0], &result.version_, 3, 4)) {
+    *err = "unexpected transfer list version ["s + lines[0] + "]";
+    return TransferList{};
+  }
+
+  // Second line in transfer list is the total number of blocks we expect to write.
+  if (!android::base::ParseUint(lines[1], &result.total_blocks_)) {
+    *err = "unexpected block count ["s + lines[1] + "]";
+    return TransferList{};
+  }
+
+  // Third line is how many stash entries are needed simultaneously.
+  if (!android::base::ParseUint(lines[2], &result.stash_max_entries_)) {
+    return TransferList{};
+  }
+
+  // Fourth line is the maximum number of blocks that will be stashed simultaneously.
+  if (!android::base::ParseUint(lines[3], &result.stash_max_blocks_)) {
+    *err = "unexpected maximum stash blocks ["s + lines[3] + "]";
+    return TransferList{};
+  }
+
+  // Subsequent lines are all individual transfer commands.
+  for (size_t i = kTransferListHeaderLines; i < lines.size(); i++) {
+    const std::string& line = lines[i];
+    if (line.empty()) continue;
+
+    size_t cmdindex = i - kTransferListHeaderLines;
+    std::string parsing_error;
+    Command command = Command::Parse(line, cmdindex, &parsing_error);
+    if (!command) {
+      *err = android::base::StringPrintf("Failed to parse command %zu [%s]: %s", cmdindex,
+                                         line.c_str(), parsing_error.c_str());
+      return TransferList{};
+    }
+    result.commands_.push_back(command);
+  }
+
+  return result;
 }
