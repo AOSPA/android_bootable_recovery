@@ -364,7 +364,8 @@ int main(int argc, char** argv) {
         std::string option = OPTIONS[option_index].name;
         if (option == "locale") {
           locale = optarg;
-        } else if (option == "fastboot") {
+        } else if (option == "fastboot" &&
+                   android::base::GetBoolProperty("ro.boot.logical_partitions", false)) {
           fastboot = true;
         }
         break;
@@ -423,6 +424,10 @@ int main(int argc, char** argv) {
 
   if (!has_cache) {
     device->RemoveMenuItemForAction(Device::WIPE_CACHE);
+  }
+
+  if (!android::base::GetBoolProperty("ro.boot.logical_partitions", false)) {
+    device->RemoveMenuItemForAction(Device::ENTER_FASTBOOT);
   }
 
   ui->SetBackground(RecoveryUI::NONE);
