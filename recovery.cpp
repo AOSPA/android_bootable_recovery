@@ -1044,6 +1044,13 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
 
   auto args_to_parse = StringVectorToNullTerminatedArray(args);
 
+  if (has_cache && ensure_path_mounted(CACHE_ROOT) == 0) {
+  //Create /cache/recovery specifically if it is not created
+  //As in cases where device is booted into recovery directly after
+  //flashing recovery folder is not created in init
+    mkdir_recursively(CACHE_LOG_DIR, 0777, false, sehandle);
+  }
+
   int arg;
   int option_index;
   // Parse everything before the last element (which must be a nullptr). getopt_long(3) expects a
