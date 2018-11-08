@@ -49,10 +49,11 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
-
+#include <string>
 #include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include <sstream>
 
 #include "minui/minui.h"
 
@@ -80,6 +81,54 @@
   find_prop_id(res, type, Type, id, id_name, prop_id); \
   if (prop_id)                                         \
     drmModeAtomicAddProperty(atomic_req, id, prop_id, id_val);
+
+/**
+ * enum sde_rm_topology_name - HW resource use case in use by connector
+ * @SDE_RM_TOPOLOGY_NONE:                 No topology in use currently
+ * @SDE_RM_TOPOLOGY_SINGLEPIPE:           1 LM, 1 PP, 1 INTF/WB
+ * @SDE_RM_TOPOLOGY_SINGLEPIPE_DSC:       1 LM, 1 DSC, 1 PP, 1 INTF/WB
+ * @SDE_RM_TOPOLOGY_DUALPIPE:             2 LM, 2 PP, 2 INTF/WB
+ * @SDE_RM_TOPOLOGY_DUALPIPE_DSC:         2 LM, 2 DSC, 2 PP, 2 INTF/WB
+ * @SDE_RM_TOPOLOGY_DUALPIPE_3DMERGE:     2 LM, 2 PP, 3DMux, 1 INTF/WB
+ * @SDE_RM_TOPOLOGY_DUALPIPE_3DMERGE_DSC: 2 LM, 2 PP, 3DMux, 1 DSC, 1 INTF/WB
+ * @SDE_RM_TOPOLOGY_DUALPIPE_DSCMERGE:    2 LM, 2 PP, 2 DSC Merge, 1 INTF/WB
+ * @SDE_RM_TOPOLOGY_PPSPLIT:              1 LM, 2 PPs, 2 INTF/WB
+ */
+
+static uint32_t get_lm_number(const std::string &topology) {
+  if (topology == "sde_singlepipe") return 1;
+  if (topology == "sde_singlepipe_dsc") return 1;
+  if (topology == "sde_dualpipe") return 2;
+  if (topology == "sde_dualpipe_dsc") return 2;
+  if (topology == "sde_dualpipemerge") return 2;
+  if (topology == "sde_dualpipemerge_dsc") return 2;
+  if (topology == "sde_dualpipe_dscmerge") return 2;
+  if (topology == "sde_ppsplit") return 1;
+  return 2;
+}
+
+static uint32_t get_topology_lm_number(int fd, uint32_t blob_id) {
+  uint32_t num_lm = 2;
+
+  drmModePropertyBlobRes *blob = drmModeGetPropertyBlob(fd, blob_id);
+  if (!blob) {
+    return num_lm;
+  }
+
+  const char *fmt_str = (const char *)(blob->data);
+  std::stringstream stream(fmt_str);
+  std::string line = {};
+  const std::string topology = "topology=";
+
+  while (std::getline(stream, line)) {
+    if (line.find(topology) != std::string::npos) {
+        num_lm = get_lm_number(std::string(line, topology.length()));
+    }
+  }
+
+  drmModeFreePropertyBlob(blob);
+  return num_lm;
+}
 
 static int find_plane_prop_id(uint32_t obj_id, const char *prop_name,
                               Plane *plane_res) {
@@ -131,18 +180,18 @@ int MinuiBackendDrm::AtomicPopulatePlane(int plane, drmModeAtomicReqPtr atomic_r
   int height = main_monitor_crtc->mode.vdisplay;
 
   src_y = 0;
-  src_w = width/2;
+  src_w = width/number_of_lms;
   src_h =  height;
   crtc_y = 0;
-  crtc_w = width/2;
+  crtc_w = width/number_of_lms;
   crtc_h = height;
 
   if (plane == Left) {
     src_x = 0;
     crtc_x = 0;
   } else {
-    src_x = width/2;
-    crtc_x = width/2;
+    src_x = width/number_of_lms;
+    crtc_x = width/number_of_lms;
   }
 
   if (atomic_add_prop_to_plane(plane_res, atomic_req,
@@ -191,15 +240,15 @@ int MinuiBackendDrm::AtomicPopulatePlane(int plane, drmModeAtomicReqPtr atomic_r
 }
 
 int MinuiBackendDrm::TeardownPipeline(drmModeAtomicReqPtr atomic_req) {
-  uint32_t prop_id;
-  int i, ret;
+  uint32_t i, prop_id;
+  int ret;
 
   /* During suspend, tear down pipeline */
   add_prop(&conn_res, connector, Connector, main_monitor_connector->connector_id, "CRTC_ID", 0);
   add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "MODE_ID", 0);
   add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "ACTIVE", 0);
 
-  for(i = 0; i < NUM_PLANES; i++) {
+  for(i = 0; i < number_of_lms; i++) {
     ret = atomic_add_prop_to_plane(plane_res, atomic_req,
                                    plane_res[i].plane->plane_id, "CRTC_ID", 0);
     if (ret < 0) {
@@ -221,10 +270,10 @@ int MinuiBackendDrm::DrmDisableCrtc(drmModeAtomicReqPtr atomic_req) {
 }
 
 int MinuiBackendDrm::SetupPipeline(drmModeAtomicReqPtr atomic_req) {
-  uint32_t prop_id;
-  int i, ret;
+  uint32_t i, prop_id;
+  int ret;
 
-  for(i = 0; i < NUM_PLANES; i++) {
+  for(i = 0; i < number_of_lms; i++) {
     add_prop(&conn_res, connector, Connector, main_monitor_connector->connector_id,
          "CRTC_ID", main_monitor_crtc->crtc_id);
     add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "MODE_ID", crtc_res.mode_blob_id);
@@ -232,7 +281,7 @@ int MinuiBackendDrm::SetupPipeline(drmModeAtomicReqPtr atomic_req) {
   }
 
   /* Setup planes */
-  for(i = 0; i < NUM_PLANES; i++) {
+  for(i = 0; i < number_of_lms; i++) {
     ret = AtomicPopulatePlane(i, atomic_req);
     if (ret < 0) {
       printf("Error populating plane_id = %d\n", plane_res[i].plane->plane_id);
@@ -516,7 +565,7 @@ void MinuiBackendDrm::DisableNonMainCrtcs(int fd, drmModeRes* resources, drmMode
 }
 
 void MinuiBackendDrm::UpdatePlaneFB() {
-  int i;
+  uint32_t i;
 
   /* Set atomic req */
   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
@@ -526,7 +575,7 @@ void MinuiBackendDrm::UpdatePlaneFB() {
   }
 
   /* Add property */
-  for(i = 0; i < NUM_PLANES; i++)
+  for(i = 0; i < number_of_lms; i++)
     drmModeAtomicAddProperty(atomic_req, plane_res[i].plane->plane_id,
                              fb_prop_id, GRSurfaceDrms[current_buffer]->fb_id);
 
@@ -544,6 +593,7 @@ void MinuiBackendDrm::UpdatePlaneFB() {
 GRSurface* MinuiBackendDrm::Init() {
   drmModeRes* res = nullptr;
 
+  number_of_lms = 2;
   /* Consider DRM devices in order. */
   for (int i = 0; i < DRM_MAX_MINOR; i++) {
     char* dev_name;
@@ -622,7 +672,7 @@ GRSurface* MinuiBackendDrm::Init() {
 
   /* Get possible plane_ids */
   drmModePlaneRes *plane_options = drmModeGetPlaneResources(drm_fd);
-  if (!plane_options || !plane_options->planes || (plane_options->count_planes < NUM_PLANES))
+  if (!plane_options || !plane_options->planes || (plane_options->count_planes < number_of_lms))
     return NULL;
 
   drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
@@ -657,19 +707,27 @@ GRSurface* MinuiBackendDrm::Init() {
                          sizeof(conn_res.props_info)));
   if (!conn_res.props_info)
     return NULL;
-  else
-    for (int j = 0; j < (int)conn_res.props->count_props; ++j)
+  else {
+    for (int j = 0; j < (int)conn_res.props->count_props; ++j) {
+
       conn_res.props_info[j] = drmModeGetProperty(drm_fd,
                                  conn_res.props->props[j]);
 
+      if (!strcmp(conn_res.props_info[j]->name, "mode_properties")) {
+        number_of_lms = get_topology_lm_number(drm_fd, conn_res.props->prop_values[j]);
+        printf("number of lms in topology %d\n", number_of_lms);
+      }
+    }
+  }
+
   /* Set plane resources */
-  for(int i = 0; i < NUM_PLANES; ++i) {
+  for(uint32_t i = 0; i < number_of_lms; ++i) {
     plane_res[i].plane = drmModeGetPlane(drm_fd, plane_options->planes[i]);
     if (!plane_res[i].plane)
       return NULL;
   }
 
-  for (int i = 0; i < NUM_PLANES; ++i) {
+  for (uint32_t i = 0; i < number_of_lms; ++i) {
     struct Plane *obj = &plane_res[i];
     unsigned int j;
     obj->props = drmModeObjectGetProperties(drm_fd, obj->plane->plane_id,
