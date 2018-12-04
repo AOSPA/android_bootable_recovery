@@ -51,8 +51,8 @@ void WearRecoveryUI::draw_background_locked() {
   gr_color(0, 0, 0, 255);
   gr_fill(0, 0, gr_fb_width(), gr_fb_height());
 
-  if (currentIcon != NONE) {
-    GRSurface* frame = GetCurrentFrame();
+  if (current_icon_ != NONE) {
+    const auto& frame = GetCurrentFrame();
     int frame_width = gr_get_width(frame);
     int frame_height = gr_get_height(frame);
     int frame_x = (gr_fb_width() - frame_width) / 2;
@@ -60,7 +60,7 @@ void WearRecoveryUI::draw_background_locked() {
     gr_blit(frame, 0, 0, frame_width, frame_height, frame_x, frame_y);
 
     // Draw recovery text on screen above progress bar.
-    GRSurface* text = GetCurrentText();
+    const auto& text = GetCurrentText();
     int text_x = (ScreenWidth() - gr_get_width(text)) / 2;
     int text_y = GetProgressBaseline() - gr_get_height(text) - 10;
     gr_color(255, 255, 255, 255);
@@ -95,13 +95,14 @@ void WearRecoveryUI::update_progress_locked() {
 
 void WearRecoveryUI::SetStage(int /* current */, int /* max */) {}
 
-void WearRecoveryUI::StartMenu(const std::vector<std::string>& headers,
-                               const std::vector<std::string>& items, size_t initial_selection) {
-  std::lock_guard<std::mutex> lg(updateMutex);
+std::unique_ptr<Menu> WearRecoveryUI::CreateMenu(const std::vector<std::string>& text_headers,
+                                                 const std::vector<std::string>& text_items,
+                                                 size_t initial_selection) const {
   if (text_rows_ > 0 && text_cols_ > 0) {
-    menu_ = std::make_unique<TextMenu>(scrollable_menu_, text_rows_ - menu_unusable_rows_ - 1,
-                                       text_cols_ - 1, headers, items, initial_selection,
-                                       char_height_, *this);
-    update_screen_locked();
+    return std::make_unique<TextMenu>(scrollable_menu_, text_rows_ - menu_unusable_rows_ - 1,
+                                      text_cols_ - 1, text_headers, text_items, initial_selection,
+                                      char_height_, *this);
   }
+
+  return nullptr;
 }

@@ -23,10 +23,11 @@
 #include <string>
 #include <vector>
 
+#include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/stringprintf.h>
-#include <android-base/test_utils.h>
 #include <gtest/gtest.h>
+#include <gtest/gtest_prod.h>
 
 #include "common/test_constants.h"
 #include "device.h"
@@ -42,26 +43,26 @@ static const std::vector<std::string> ITEMS{ "item1", "item2", "item3", "item4",
 class MockDrawFunctions : public DrawInterface {
   void SetColor(UIElement /* element */) const override {}
   void DrawHighlightBar(int /* x */, int /* y */, int /* width */,
-                        int /* height */) const override {};
+                        int /* height */) const override {}
   int DrawHorizontalRule(int /* y */) const override {
     return 0;
-  };
+  }
   int DrawTextLine(int /* x */, int /* y */, const std::string& /* line */,
                    bool /* bold */) const override {
     return 0;
-  };
-  void DrawSurface(GRSurface* /* surface */, int /* sx */, int /* sy */, int /* w */, int /* h */,
-                   int /* dx */, int /* dy */) const override {};
-  void DrawFill(int /* x */, int /* y */, int /* w */, int /* h */) const override {};
-  void DrawTextIcon(int /* x */, int /* y */, GRSurface* /* surface */) const override {};
+  }
+  void DrawSurface(const GRSurface* /* surface */, int /* sx */, int /* sy */, int /* w */,
+                   int /* h */, int /* dx */, int /* dy */) const override {}
+  void DrawFill(int /* x */, int /* y */, int /* w */, int /* h */) const override {}
+  void DrawTextIcon(int /* x */, int /* y */, const GRSurface* /* surface */) const override {}
   int DrawTextLines(int /* x */, int /* y */,
                     const std::vector<std::string>& /* lines */) const override {
     return 0;
-  };
+  }
   int DrawWrappedTextLines(int /* x */, int /* y */,
                            const std::vector<std::string>& /* lines */) const override {
     return 0;
-  };
+  }
 };
 
 class ScreenUITest : public testing::Test {
@@ -229,6 +230,53 @@ TEST_F(ScreenUITest, WearMenuSelectItemsOverflow) {
   ASSERT_EQ(3u, menu.MenuEnd());
 }
 
+TEST_F(ScreenUITest, GraphicMenuSelection) {
+  auto image = GRSurface::Create(50, 50, 50, 1, 50 * 50);
+  auto header = image->Clone();
+  std::vector<const GRSurface*> items = {
+    image.get(),
+    image.get(),
+    image.get(),
+  };
+  GraphicMenu menu(header.get(), items, 0, draw_funcs_);
+
+  ASSERT_EQ(0, menu.selection());
+
+  int sel = 0;
+  for (int i = 0; i < 3; i++) {
+    sel = menu.Select(++sel);
+    ASSERT_EQ((i + 1) % 3, sel);
+    ASSERT_EQ(sel, menu.selection());
+  }
+
+  sel = 0;
+  for (int i = 0; i < 3; i++) {
+    sel = menu.Select(--sel);
+    ASSERT_EQ(2 - i, sel);
+    ASSERT_EQ(sel, menu.selection());
+  }
+}
+
+TEST_F(ScreenUITest, GraphicMenuValidate) {
+  auto image = GRSurface::Create(50, 50, 50, 1, 50 * 50);
+  auto header = image->Clone();
+  std::vector<const GRSurface*> items = {
+    image.get(),
+    image.get(),
+    image.get(),
+  };
+
+  ASSERT_TRUE(GraphicMenu::Validate(200, 200, header.get(), items));
+
+  // Menu exceeds the horizontal boundary.
+  auto wide_surface = GRSurface::Create(300, 50, 300, 1, 300 * 50);
+  ASSERT_FALSE(GraphicMenu::Validate(299, 200, wide_surface.get(), items));
+
+  // Menu exceeds the vertical boundary.
+  items.emplace_back(image.get());
+  ASSERT_FALSE(GraphicMenu::Validate(200, 249, header.get(), items));
+}
+
 static constexpr int kMagicAction = 101;
 
 enum class KeyCode : int {
@@ -259,24 +307,13 @@ class TestableScreenRecoveryUI : public ScreenRecoveryUI {
 
   int KeyHandler(int key, bool visible) const;
 
-  // The following functions expose the protected members for test purpose.
-  void RunLoadAnimation() {
-    LoadAnimation();
-  }
-
-  size_t GetLoopFrames() const {
-    return loop_frames;
-  }
-
-  size_t GetIntroFrames() const {
-    return intro_frames;
-  }
-
-  bool GetRtlLocale() const {
-    return rtl_locale_;
-  }
-
  private:
+  FRIEND_TEST(ScreenRecoveryUITest, Init);
+  FRIEND_TEST(ScreenRecoveryUITest, RtlLocale);
+  FRIEND_TEST(ScreenRecoveryUITest, RtlLocaleWithSuffix);
+  FRIEND_TEST(ScreenRecoveryUITest, LoadAnimation);
+  FRIEND_TEST(ScreenRecoveryUITest, LoadAnimation_MissingAnimation);
+
   std::vector<KeyCode> key_buffer_;
   size_t key_buffer_index_;
 };
@@ -340,7 +377,7 @@ TEST_F(ScreenRecoveryUITest, Init) {
 
   ASSERT_TRUE(ui_->Init(kTestLocale));
   ASSERT_EQ(kTestLocale, ui_->GetLocale());
-  ASSERT_FALSE(ui_->GetRtlLocale());
+  ASSERT_FALSE(ui_->rtl_locale_);
   ASSERT_FALSE(ui_->IsTextVisible());
   ASSERT_FALSE(ui_->WasTextEverVisible());
 }
@@ -368,14 +405,14 @@ TEST_F(ScreenRecoveryUITest, RtlLocale) {
   RETURN_IF_NO_GRAPHICS;
 
   ASSERT_TRUE(ui_->Init(kTestRtlLocale));
-  ASSERT_TRUE(ui_->GetRtlLocale());
+  ASSERT_TRUE(ui_->rtl_locale_);
 }
 
 TEST_F(ScreenRecoveryUITest, RtlLocaleWithSuffix) {
   RETURN_IF_NO_GRAPHICS;
 
   ASSERT_TRUE(ui_->Init(kTestRtlLocaleWithSuffix));
-  ASSERT_TRUE(ui_->GetRtlLocale());
+  ASSERT_TRUE(ui_->rtl_locale_);
 }
 
 TEST_F(ScreenRecoveryUITest, ShowMenu) {
@@ -500,10 +537,10 @@ TEST_F(ScreenRecoveryUITest, LoadAnimation) {
   }
   Paths::Get().set_resource_dir(resource_dir.path);
 
-  ui_->RunLoadAnimation();
+  ui_->LoadAnimation();
 
-  ASSERT_EQ(2u, ui_->GetIntroFrames());
-  ASSERT_EQ(3u, ui_->GetLoopFrames());
+  ASSERT_EQ(2u, ui_->intro_frames_.size());
+  ASSERT_EQ(3u, ui_->loop_frames_.size());
 
   for (const auto& name : tempfiles) {
     ASSERT_EQ(0, unlink(name.c_str()));
@@ -519,7 +556,7 @@ TEST_F(ScreenRecoveryUITest, LoadAnimation_MissingAnimation) {
   Paths::Get().set_resource_dir("/proc/self");
 
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
-  ASSERT_EXIT(ui_->RunLoadAnimation(), ::testing::KilledBySignal(SIGABRT), "");
+  ASSERT_EXIT(ui_->LoadAnimation(), ::testing::KilledBySignal(SIGABRT), "");
 }
 
 #undef RETURN_IF_NO_GRAPHICS
