@@ -27,9 +27,14 @@
 #include <vector>
 
 #include <android-base/logging.h>
+#include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/ecdsa.h>
+#include <openssl/evp.h>
 #include <openssl/obj_mac.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <ziparchive/zip_archive.h>
 
 #include "asn1_decoder.h"
 #include "otautil/print_sha1.h"
@@ -439,6 +444,124 @@ std::unique_ptr<EC_KEY, ECKEYDeleter> parse_ec_key(FILE* file) {
     }
 
     return key;
+}
+
+static std::vector<Certificate> IterateZipEntriesAndSearchForKeys(const ZipArchiveHandle& handle) {
+  void* cookie;
+  ZipString suffix("x509.pem");
+  int32_t iter_status = StartIteration(handle, &cookie, nullptr, &suffix);
+  if (iter_status != 0) {
+    LOG(ERROR) << "Failed to iterate over entries in the certificate zipfile: "
+               << ErrorCodeString(iter_status);
+    return {};
+  }
+
+  std::vector<Certificate> result;
+
+  ZipString name;
+  ZipEntry entry;
+  while ((iter_status = Next(cookie, &entry, &name)) == 0) {
+    std::vector<uint8_t> pem_content(entry.uncompressed_length);
+    if (int32_t extract_status =
+            ExtractToMemory(handle, &entry, pem_content.data(), pem_content.size());
+        extract_status != 0) {
+      LOG(ERROR) << "Failed to extract " << std::string(name.name, name.name + name.name_length);
+      return {};
+    }
+
+    Certificate cert(0, Certificate::KEY_TYPE_RSA, nullptr, nullptr);
+    // Aborts the parsing if we fail to load one of the key file.
+    if (!LoadCertificateFromBuffer(pem_content, &cert)) {
+      LOG(ERROR) << "Failed to load keys from "
+                 << std::string(name.name, name.name + name.name_length);
+      return {};
+    }
+
+    result.emplace_back(std::move(cert));
+  }
+
+  if (iter_status != -1) {
+    LOG(ERROR) << "Error while iterating over zip entries: " << ErrorCodeString(iter_status);
+    return {};
+  }
+
+  return result;
+}
+
+std::vector<Certificate> LoadKeysFromZipfile(const std::string& zip_name) {
+  ZipArchiveHandle handle;
+  if (int32_t open_status = OpenArchive(zip_name.c_str(), &handle); open_status != 0) {
+    LOG(ERROR) << "Failed to open " << zip_name << ": " << ErrorCodeString(open_status);
+    return {};
+  }
+
+  std::vector<Certificate> result = IterateZipEntriesAndSearchForKeys(handle);
+  CloseArchive(handle);
+  return result;
+}
+
+bool LoadCertificateFromBuffer(const std::vector<uint8_t>& pem_content, Certificate* cert) {
+  std::unique_ptr<BIO, decltype(&BIO_free)> content(
+      BIO_new_mem_buf(pem_content.data(), pem_content.size()), BIO_free);
+
+  std::unique_ptr<X509, decltype(&X509_free)> x509(
+      PEM_read_bio_X509(content.get(), nullptr, nullptr, nullptr), X509_free);
+  if (!x509) {
+    LOG(ERROR) << "Failed to read x509 certificate";
+    return false;
+  }
+
+  int nid = X509_get_signature_nid(x509.get());
+  switch (nid) {
+    // SignApk has historically accepted md5WithRSA certificates, but treated them as
+    // sha1WithRSA anyway. Continue to do so for backwards compatibility.
+    case NID_md5WithRSA:
+    case NID_md5WithRSAEncryption:
+    case NID_sha1WithRSA:
+    case NID_sha1WithRSAEncryption:
+      cert->hash_len = SHA_DIGEST_LENGTH;
+      break;
+    case NID_sha256WithRSAEncryption:
+    case NID_ecdsa_with_SHA256:
+      cert->hash_len = SHA256_DIGEST_LENGTH;
+      break;
+    default:
+      LOG(ERROR) << "Unrecognized signature nid " << OBJ_nid2ln(nid);
+      return false;
+  }
+
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> public_key(X509_get_pubkey(x509.get()),
+                                                                 EVP_PKEY_free);
+  if (!public_key) {
+    LOG(ERROR) << "Failed to extract the public key from x509 certificate";
+    return false;
+  }
+
+  int key_type = EVP_PKEY_id(public_key.get());
+  // TODO(xunchang) check the rsa key has exponent 3 or 65537 with RSA_get0_key; and ec key is
+  // 256 bits.
+  if (key_type == EVP_PKEY_RSA) {
+    cert->key_type = Certificate::KEY_TYPE_RSA;
+    cert->ec.reset();
+    cert->rsa.reset(EVP_PKEY_get1_RSA(public_key.get()));
+    if (!cert->rsa) {
+      LOG(ERROR) << "Failed to get the rsa key info from public key";
+      return false;
+    }
+  } else if (key_type == EVP_PKEY_EC) {
+    cert->key_type = Certificate::KEY_TYPE_EC;
+    cert->rsa.reset();
+    cert->ec.reset(EVP_PKEY_get1_EC_KEY(public_key.get()));
+    if (!cert->ec) {
+      LOG(ERROR) << "Failed to get the ec key info from the public key";
+      return false;
+    }
+  } else {
+    LOG(ERROR) << "Unrecognized public key type " << OBJ_nid2ln(key_type);
+    return false;
+  }
+
+  return true;
 }
 
 // Reads a file containing one or more public keys as produced by

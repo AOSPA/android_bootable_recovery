@@ -17,6 +17,8 @@
 #ifndef _RECOVERY_VERIFIER_H
 #define _RECOVERY_VERIFIER_H
 
+#include <stdint.h>
+
 #include <functional>
 #include <memory>
 #include <vector>
@@ -69,6 +71,14 @@ int verify_file(const unsigned char* addr, size_t length, const std::vector<Cert
                 const std::function<void(float)>& set_progress = nullptr);
 
 bool load_keys(const char* filename, std::vector<Certificate>& certs);
+
+// Parses a PEM-encoded x509 certificate from the given buffer and saves it into |cert|. Returns
+// false if there is a parsing failure or the signature's encryption algorithm is not supported.
+bool LoadCertificateFromBuffer(const std::vector<uint8_t>& pem_content, Certificate* cert);
+
+// Iterates over the zip entries with the suffix "x509.pem" and returns a list of recognized
+// certificates. Returns an empty list if we fail to parse any of the entries.
+std::vector<Certificate> LoadKeysFromZipfile(const std::string& zip_name);
 
 #define VERIFY_SUCCESS        0
 #define VERIFY_FAILURE        1
