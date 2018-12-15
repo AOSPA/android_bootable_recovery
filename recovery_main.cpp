@@ -365,7 +365,7 @@ int main(int argc, char** argv) {
         if (option == "locale") {
           locale = optarg;
         } else if (option == "fastboot" &&
-                   android::base::GetBoolProperty("ro.boot.logical_partitions", false)) {
+                   android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
           fastboot = true;
         }
         break;
@@ -426,7 +426,7 @@ int main(int argc, char** argv) {
     device->RemoveMenuItemForAction(Device::WIPE_CACHE);
   }
 
-  if (!android::base::GetBoolProperty("ro.boot.logical_partitions", false)) {
+  if (!android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
     device->RemoveMenuItemForAction(Device::ENTER_FASTBOOT);
   }
 
@@ -478,8 +478,13 @@ int main(int argc, char** argv) {
         break;
 
       case Device::ENTER_FASTBOOT:
-        LOG(INFO) << "Entering fastboot";
-        fastboot = true;
+        if (logical_partitions_mapped()) {
+          ui->Print("Partitions may be mounted - rebooting to enter fastboot.");
+          android::base::SetProperty(ANDROID_RB_PROPERTY, "reboot,fastboot");
+        } else {
+          LOG(INFO) << "Entering fastboot";
+          fastboot = true;
+        }
         break;
 
       case Device::ENTER_RECOVERY:

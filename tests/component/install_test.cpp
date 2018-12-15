@@ -20,13 +20,13 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <random>
 #include <string>
 #include <vector>
 
 #include <android-base/file.h>
 #include <android-base/properties.h>
 #include <android-base/strings.h>
-#include <android-base/test_utils.h>
 #include <gtest/gtest.h>
 #include <vintf/VintfObjectRecovery.h>
 #include <ziparchive/zip_archive.h>
@@ -36,15 +36,23 @@
 #include "otautil/paths.h"
 #include "private/install.h"
 
-TEST(InstallTest, verify_package_compatibility_no_entry) {
-  TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
+static void BuildZipArchive(const std::map<std::string, std::string>& file_map, int fd,
+                            int compression_type) {
+  FILE* zip_file = fdopen(fd, "w");
   ZipWriter writer(zip_file);
-  // The archive must have something to be opened correctly.
-  ASSERT_EQ(0, writer.StartEntry("dummy_entry", 0));
-  ASSERT_EQ(0, writer.FinishEntry());
+  for (const auto& [name, content] : file_map) {
+    ASSERT_EQ(0, writer.StartEntry(name.c_str(), compression_type));
+    ASSERT_EQ(0, writer.WriteBytes(content.data(), content.size()));
+    ASSERT_EQ(0, writer.FinishEntry());
+  }
   ASSERT_EQ(0, writer.Finish());
   ASSERT_EQ(0, fclose(zip_file));
+}
+
+TEST(InstallTest, verify_package_compatibility_no_entry) {
+  TemporaryFile temp_file;
+  // The archive must have something to be opened correctly.
+  BuildZipArchive({ { "dummy_entry", "" } }, temp_file.release(), kCompressStored);
 
   // Doesn't contain compatibility zip entry.
   ZipArchiveHandle zip;
@@ -55,12 +63,7 @@ TEST(InstallTest, verify_package_compatibility_no_entry) {
 
 TEST(InstallTest, verify_package_compatibility_invalid_entry) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  ASSERT_EQ(0, writer.StartEntry("compatibility.zip", 0));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  BuildZipArchive({ { "compatibility.zip", "" } }, temp_file.release(), kCompressStored);
 
   // Empty compatibility zip entry.
   ZipArchiveHandle zip;
@@ -71,77 +74,51 @@ TEST(InstallTest, verify_package_compatibility_invalid_entry) {
 
 TEST(InstallTest, read_metadata_from_package_smoke) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  ASSERT_EQ(0, writer.StartEntry("META-INF/com/android/metadata", kCompressStored));
-  const std::string content("abcdefg");
-  ASSERT_EQ(0, writer.WriteBytes(content.data(), content.size()));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  const std::string content("abc=defg");
+  BuildZipArchive({ { "META-INF/com/android/metadata", content } }, temp_file.release(),
+                  kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
-  std::string metadata;
-  ASSERT_TRUE(read_metadata_from_package(zip, &metadata));
-  ASSERT_EQ(content, metadata);
+  std::map<std::string, std::string> metadata;
+  ASSERT_TRUE(ReadMetadataFromPackage(zip, &metadata));
+  ASSERT_EQ("defg", metadata["abc"]);
   CloseArchive(zip);
 
   TemporaryFile temp_file2;
-  FILE* zip_file2 = fdopen(temp_file2.release(), "w");
-  ZipWriter writer2(zip_file2);
-  ASSERT_EQ(0, writer2.StartEntry("META-INF/com/android/metadata", kCompressDeflated));
-  ASSERT_EQ(0, writer2.WriteBytes(content.data(), content.size()));
-  ASSERT_EQ(0, writer2.FinishEntry());
-  ASSERT_EQ(0, writer2.Finish());
-  ASSERT_EQ(0, fclose(zip_file2));
+  BuildZipArchive({ { "META-INF/com/android/metadata", content } }, temp_file2.release(),
+                  kCompressDeflated);
 
   ASSERT_EQ(0, OpenArchive(temp_file2.path, &zip));
   metadata.clear();
-  ASSERT_TRUE(read_metadata_from_package(zip, &metadata));
-  ASSERT_EQ(content, metadata);
+  ASSERT_TRUE(ReadMetadataFromPackage(zip, &metadata));
+  ASSERT_EQ("defg", metadata["abc"]);
   CloseArchive(zip);
 }
 
 TEST(InstallTest, read_metadata_from_package_no_entry) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  ASSERT_EQ(0, writer.StartEntry("dummy_entry", kCompressStored));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  BuildZipArchive({ { "dummy_entry", "" } }, temp_file.release(), kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
-  std::string metadata;
-  ASSERT_FALSE(read_metadata_from_package(zip, &metadata));
+  std::map<std::string, std::string> metadata;
+  ASSERT_FALSE(ReadMetadataFromPackage(zip, &metadata));
   CloseArchive(zip);
 }
 
 TEST(InstallTest, verify_package_compatibility_with_libvintf_malformed_xml) {
   TemporaryFile compatibility_zip_file;
-  FILE* compatibility_zip = fdopen(compatibility_zip_file.release(), "w");
-  ZipWriter compatibility_zip_writer(compatibility_zip);
-  ASSERT_EQ(0, compatibility_zip_writer.StartEntry("system_manifest.xml", kCompressDeflated));
   std::string malformed_xml = "malformed";
-  ASSERT_EQ(0, compatibility_zip_writer.WriteBytes(malformed_xml.data(), malformed_xml.size()));
-  ASSERT_EQ(0, compatibility_zip_writer.FinishEntry());
-  ASSERT_EQ(0, compatibility_zip_writer.Finish());
-  ASSERT_EQ(0, fclose(compatibility_zip));
+  BuildZipArchive({ { "system_manifest.xml", malformed_xml } }, compatibility_zip_file.release(),
+                  kCompressDeflated);
 
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  ASSERT_EQ(0, writer.StartEntry("compatibility.zip", kCompressStored));
   std::string compatibility_zip_content;
   ASSERT_TRUE(
       android::base::ReadFileToString(compatibility_zip_file.path, &compatibility_zip_content));
-  ASSERT_EQ(0,
-            writer.WriteBytes(compatibility_zip_content.data(), compatibility_zip_content.size()));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  BuildZipArchive({ { "compatibility.zip", compatibility_zip_content } }, temp_file.release(),
+                  kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
@@ -166,27 +143,15 @@ TEST(InstallTest, verify_package_compatibility_with_libvintf_system_manifest_xml
   ASSERT_TRUE(
       android::base::ReadFileToString(system_manifest_xml_path, &system_manifest_xml_content));
   TemporaryFile compatibility_zip_file;
-  FILE* compatibility_zip = fdopen(compatibility_zip_file.release(), "w");
-  ZipWriter compatibility_zip_writer(compatibility_zip);
-  ASSERT_EQ(0, compatibility_zip_writer.StartEntry("system_manifest.xml", kCompressDeflated));
-  ASSERT_EQ(0, compatibility_zip_writer.WriteBytes(system_manifest_xml_content.data(),
-                                                   system_manifest_xml_content.size()));
-  ASSERT_EQ(0, compatibility_zip_writer.FinishEntry());
-  ASSERT_EQ(0, compatibility_zip_writer.Finish());
-  ASSERT_EQ(0, fclose(compatibility_zip));
+  BuildZipArchive({ { "system_manifest.xml", system_manifest_xml_content } },
+                  compatibility_zip_file.release(), kCompressDeflated);
 
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  ASSERT_EQ(0, writer.StartEntry("compatibility.zip", kCompressStored));
   std::string compatibility_zip_content;
   ASSERT_TRUE(
       android::base::ReadFileToString(compatibility_zip_file.path, &compatibility_zip_content));
-  ASSERT_EQ(0,
-            writer.WriteBytes(compatibility_zip_content.data(), compatibility_zip_content.size()));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  BuildZipArchive({ { "compatibility.zip", compatibility_zip_content } }, temp_file.release(),
+                  kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
@@ -202,13 +167,8 @@ TEST(InstallTest, verify_package_compatibility_with_libvintf_system_manifest_xml
 
 TEST(InstallTest, SetUpNonAbUpdateCommands) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
   static constexpr const char* UPDATE_BINARY_NAME = "META-INF/com/google/android/update-binary";
-  ASSERT_EQ(0, writer.StartEntry(UPDATE_BINARY_NAME, kCompressStored));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  BuildZipArchive({ { UPDATE_BINARY_NAME, "" } }, temp_file.release(), kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
@@ -246,13 +206,8 @@ TEST(InstallTest, SetUpNonAbUpdateCommands) {
 
 TEST(InstallTest, SetUpNonAbUpdateCommands_MissingUpdateBinary) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
   // The archive must have something to be opened correctly.
-  ASSERT_EQ(0, writer.StartEntry("dummy_entry", 0));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  BuildZipArchive({ { "dummy_entry", "" } }, temp_file.release(), kCompressStored);
 
   // Missing update binary.
   ZipArchiveHandle zip;
@@ -268,16 +223,8 @@ TEST(InstallTest, SetUpNonAbUpdateCommands_MissingUpdateBinary) {
 
 static void VerifyAbUpdateCommands(const std::string& serialno, bool success = true) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  ASSERT_EQ(0, writer.StartEntry("payload.bin", kCompressStored));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.StartEntry("payload_properties.txt", kCompressStored));
+
   const std::string properties = "some_properties";
-  ASSERT_EQ(0, writer.WriteBytes(properties.data(), properties.size()));
-  ASSERT_EQ(0, writer.FinishEntry());
-  // A metadata entry is mandatory.
-  ASSERT_EQ(0, writer.StartEntry("META-INF/com/android/metadata", kCompressStored));
   std::string device = android::base::GetProperty("ro.product.device", "");
   ASSERT_NE("", device);
   std::string timestamp = android::base::GetProperty("ro.build.date.utc", "");
@@ -288,21 +235,27 @@ static void VerifyAbUpdateCommands(const std::string& serialno, bool success = t
   if (!serialno.empty()) {
     meta.push_back("serialno=" + serialno);
   }
-  std::string metadata = android::base::Join(meta, "\n");
-  ASSERT_EQ(0, writer.WriteBytes(metadata.data(), metadata.size()));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+  std::string metadata_string = android::base::Join(meta, "\n");
+
+  BuildZipArchive({ { "payload.bin", "" },
+                    { "payload_properties.txt", properties },
+                    { "META-INF/com/android/metadata", metadata_string } },
+                  temp_file.release(), kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
   ZipString payload_name("payload.bin");
   ZipEntry payload_entry;
   ASSERT_EQ(0, FindEntry(zip, payload_name, &payload_entry));
-  int status_fd = 10;
-  std::string package = "/path/to/update.zip";
-  std::vector<std::string> cmd;
+
+  std::map<std::string, std::string> metadata;
+  ASSERT_TRUE(ReadMetadataFromPackage(zip, &metadata));
   if (success) {
+    ASSERT_EQ(0, CheckPackageMetadata(metadata, OtaType::AB));
+
+    int status_fd = 10;
+    std::string package = "/path/to/update.zip";
+    std::vector<std::string> cmd;
     ASSERT_EQ(0, SetUpAbUpdateCommands(package, zip, status_fd, &cmd));
     ASSERT_EQ(5U, cmd.size());
     ASSERT_EQ("/system/bin/update_engine_sideload", cmd[0]);
@@ -311,7 +264,7 @@ static void VerifyAbUpdateCommands(const std::string& serialno, bool success = t
     ASSERT_EQ("--headers=" + properties, cmd[3]);
     ASSERT_EQ("--status_fd=" + std::to_string(status_fd), cmd[4]);
   } else {
-    ASSERT_EQ(INSTALL_ERROR, SetUpAbUpdateCommands(package, zip, status_fd, &cmd));
+    ASSERT_EQ(INSTALL_ERROR, CheckPackageMetadata(metadata, OtaType::AB));
   }
   CloseArchive(zip);
 }
@@ -323,13 +276,7 @@ TEST(InstallTest, SetUpAbUpdateCommands) {
 
 TEST(InstallTest, SetUpAbUpdateCommands_MissingPayloadPropertiesTxt) {
   TemporaryFile temp_file;
-  FILE* zip_file = fdopen(temp_file.release(), "w");
-  ZipWriter writer(zip_file);
-  // Missing payload_properties.txt.
-  ASSERT_EQ(0, writer.StartEntry("payload.bin", kCompressStored));
-  ASSERT_EQ(0, writer.FinishEntry());
-  // A metadata entry is mandatory.
-  ASSERT_EQ(0, writer.StartEntry("META-INF/com/android/metadata", kCompressStored));
+
   std::string device = android::base::GetProperty("ro.product.device", "");
   ASSERT_NE("", device);
   std::string timestamp = android::base::GetProperty("ro.build.date.utc", "");
@@ -339,10 +286,13 @@ TEST(InstallTest, SetUpAbUpdateCommands_MissingPayloadPropertiesTxt) {
           "ota-type=AB", "pre-device=" + device, "post-timestamp=" + timestamp,
       },
       "\n");
-  ASSERT_EQ(0, writer.WriteBytes(metadata.data(), metadata.size()));
-  ASSERT_EQ(0, writer.FinishEntry());
-  ASSERT_EQ(0, writer.Finish());
-  ASSERT_EQ(0, fclose(zip_file));
+
+  BuildZipArchive(
+      {
+          { "payload.bin", "" },
+          { "META-INF/com/android/metadata", metadata },
+      },
+      temp_file.release(), kCompressStored);
 
   ZipArchiveHandle zip;
   ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
@@ -380,4 +330,242 @@ TEST(InstallTest, SetUpAbUpdateCommands_MultipleSerialnos) {
   }
   // String with the matching serialno should pass the verification.
   VerifyAbUpdateCommands(long_serialno);
+}
+
+static void test_check_package_metadata(const std::string& metadata_string, OtaType ota_type,
+                                        int exptected_result) {
+  TemporaryFile temp_file;
+  BuildZipArchive(
+      {
+          { "META-INF/com/android/metadata", metadata_string },
+      },
+      temp_file.release(), kCompressStored);
+
+  ZipArchiveHandle zip;
+  ASSERT_EQ(0, OpenArchive(temp_file.path, &zip));
+
+  std::map<std::string, std::string> metadata;
+  ASSERT_TRUE(ReadMetadataFromPackage(zip, &metadata));
+  ASSERT_EQ(exptected_result, CheckPackageMetadata(metadata, ota_type));
+  CloseArchive(zip);
+}
+
+TEST(InstallTest, CheckPackageMetadata_ota_type) {
+  std::string device = android::base::GetProperty("ro.product.device", "");
+  ASSERT_NE("", device);
+
+  // ota-type must be present
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "pre-device=" + device,
+          "post-timestamp=" + std::to_string(std::numeric_limits<int64_t>::max()),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, INSTALL_ERROR);
+
+  // Checks if ota-type matches
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "post-timestamp=" + std::to_string(std::numeric_limits<int64_t>::max()),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, 0);
+
+  test_check_package_metadata(metadata, OtaType::BRICK, INSTALL_ERROR);
+}
+
+TEST(InstallTest, CheckPackageMetadata_device_type) {
+  // device type can not be empty
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, INSTALL_ERROR);
+
+  // device type mismatches
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+          "pre-device=dummy_device_type",
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, INSTALL_ERROR);
+}
+
+TEST(InstallTest, CheckPackageMetadata_serial_number_smoke) {
+  std::string device = android::base::GetProperty("ro.product.device", "");
+  ASSERT_NE("", device);
+
+  // Serial number doesn't need to exist
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+          "pre-device=" + device,
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, 0);
+
+  // Serial number mismatches
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+          "pre-device=" + device,
+          "serialno=dummy_serial",
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, INSTALL_ERROR);
+
+  std::string serialno = android::base::GetProperty("ro.serialno", "");
+  ASSERT_NE("", serialno);
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+          "pre-device=" + device,
+          "serialno=" + serialno,
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, 0);
+}
+
+TEST(InstallTest, CheckPackageMetadata_multiple_serial_number) {
+  std::string device = android::base::GetProperty("ro.product.device", "");
+  ASSERT_NE("", device);
+
+  std::string serialno = android::base::GetProperty("ro.serialno", "");
+  ASSERT_NE("", serialno);
+
+  std::vector<std::string> serial_numbers;
+  // Creates a dummy serial number string.
+  for (size_t c = 'a'; c <= 'z'; c++) {
+    serial_numbers.emplace_back(c, serialno.size());
+  }
+
+  // No matched serialno found.
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+          "pre-device=" + device,
+          "serialno=" + android::base::Join(serial_numbers, '|'),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, INSTALL_ERROR);
+
+  serial_numbers.emplace_back(serialno);
+  std::shuffle(serial_numbers.begin(), serial_numbers.end(), std::default_random_engine());
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=BRICK",
+          "pre-device=" + device,
+          "serialno=" + android::base::Join(serial_numbers, '|'),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::BRICK, 0);
+}
+
+TEST(InstallTest, CheckPackageMetadata_ab_build_version) {
+  std::string device = android::base::GetProperty("ro.product.device", "");
+  ASSERT_NE("", device);
+
+  std::string build_version = android::base::GetProperty("ro.build.version.incremental", "");
+  ASSERT_NE("", build_version);
+
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "pre-build-incremental=" + build_version,
+          "post-timestamp=" + std::to_string(std::numeric_limits<int64_t>::max()),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, 0);
+
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "pre-build-incremental=dummy_build",
+          "post-timestamp=" + std::to_string(std::numeric_limits<int64_t>::max()),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, INSTALL_ERROR);
+}
+
+TEST(InstallTest, CheckPackageMetadata_ab_fingerprint) {
+  std::string device = android::base::GetProperty("ro.product.device", "");
+  ASSERT_NE("", device);
+
+  std::string finger_print = android::base::GetProperty("ro.build.fingerprint", "");
+  ASSERT_NE("", finger_print);
+
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "pre-build=" + finger_print,
+          "post-timestamp=" + std::to_string(std::numeric_limits<int64_t>::max()),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, 0);
+
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "pre-build=dummy_build_fingerprint",
+          "post-timestamp=" + std::to_string(std::numeric_limits<int64_t>::max()),
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, INSTALL_ERROR);
+}
+
+TEST(InstallTest, CheckPackageMetadata_ab_post_timestamp) {
+  std::string device = android::base::GetProperty("ro.product.device", "");
+  ASSERT_NE("", device);
+
+  // post timestamp is required for upgrade.
+  std::string metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, INSTALL_ERROR);
+
+  // post timestamp should be larger than the timestamp on device.
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "post-timestamp=0",
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, INSTALL_ERROR);
+
+  // fingerprint is required for downgrade
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "post-timestamp=0",
+          "ota-downgrade=yes",
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, INSTALL_ERROR);
+
+  std::string finger_print = android::base::GetProperty("ro.build.fingerprint", "");
+  ASSERT_NE("", finger_print);
+
+  metadata = android::base::Join(
+      std::vector<std::string>{
+          "ota-type=AB",
+          "pre-device=" + device,
+          "post-timestamp=0",
+          "pre-build=" + finger_print,
+          "ota-downgrade=yes",
+      },
+      "\n");
+  test_check_package_metadata(metadata, OtaType::AB, 0);
 }

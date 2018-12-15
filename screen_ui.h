@@ -29,7 +29,7 @@
 #include "ui.h"
 
 // From minui/minui.h.
-struct GRSurface;
+class GRSurface;
 
 enum class UIElement {
   HEADER,
@@ -60,14 +60,14 @@ class DrawInterface {
   virtual int DrawTextLine(int x, int y, const std::string& line, bool bold) const = 0;
 
   // Draws surface portion (sx, sy, w, h) at screen location (dx, dy).
-  virtual void DrawSurface(GRSurface* surface, int sx, int sy, int w, int h, int dx,
+  virtual void DrawSurface(const GRSurface* surface, int sx, int sy, int w, int h, int dx,
                            int dy) const = 0;
 
   // Draws rectangle at (x, y) - (x + w, y + h).
   virtual void DrawFill(int x, int y, int w, int h) const = 0;
 
   // Draws given surface (surface->pixel_bytes = 1) as text at (x, y).
-  virtual void DrawTextIcon(int x, int y, GRSurface* surface) const = 0;
+  virtual void DrawTextIcon(int x, int y, const GRSurface* surface) const = 0;
 
   // Draws multiple text lines. Returns the offset it should be moving along Y-axis.
   virtual int DrawTextLines(int x, int y, const std::vector<std::string>& lines) const = 0;
@@ -162,34 +162,31 @@ class TextMenu : public Menu {
   int char_height_;
 };
 
-// This class uses GRSurfaces* as the menu header and items.
+// This class uses GRSurface's as the menu header and items.
 class GraphicMenu : public Menu {
  public:
   // Constructs a Menu instance with the given |headers|, |items| and properties. Sets the initial
-  // selection to |initial_selection|.
-  GraphicMenu(size_t max_width, size_t max_height, GRSurface* graphic_headers,
-              const std::vector<GRSurface*>& graphic_items, size_t initial_selection,
-              const DrawInterface& draw_funcs);
+  // selection to |initial_selection|. |headers| and |items| will be made local copies.
+  GraphicMenu(const GRSurface* graphic_headers, const std::vector<const GRSurface*>& graphic_items,
+              size_t initial_selection, const DrawInterface& draw_funcs);
 
   int Select(int sel) override;
   int DrawHeader(int x, int y) const override;
   int DrawItems(int x, int y, int screen_width, bool long_press) const override;
 
-  // Checks if all the header and items are valid GRSurfaces; and that they can fit in the area
-  // defined by |max_width_| and |max_height_|.
-  bool Validate() const;
+  // Checks if all the header and items are valid GRSurface's; and that they can fit in the area
+  // defined by |max_width| and |max_height|.
+  static bool Validate(size_t max_width, size_t max_height, const GRSurface* graphic_headers,
+                       const std::vector<const GRSurface*>& graphic_items);
+
+  // Returns true if |surface| fits on the screen with a vertical offset |y|.
+  static bool ValidateGraphicSurface(size_t max_width, size_t max_height, int y,
+                                     const GRSurface* surface);
 
  private:
-  // Returns true if |surface| fits on the screen with a vertical offset |y|.
-  bool ValidateGraphicSurface(int y, const GRSurface* surface) const;
-
-  const size_t max_width_;
-  const size_t max_height_;
-
-  // Pointers to the menu headers and items in graphic icons. This class does not have the ownership
-  // of the these objects.
-  GRSurface* graphic_headers_;
-  std::vector<GRSurface*> graphic_items_;
+  // Menu headers and items in graphic icons. These are the copies owned by the class instance.
+  std::unique_ptr<GRSurface> graphic_headers_;
+  std::vector<std::unique_ptr<GRSurface>> graphic_items_;
 };
 
 // Implementation of RecoveryUI appropriate for devices with a screen
@@ -238,7 +235,14 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   // the on-device resource files and shows the localized text, for manual inspection.
   void CheckBackgroundTextImages();
 
+  // Displays the localized wipe data menu.
+  size_t ShowPromptWipeDataMenu(const std::vector<std::string>& backup_headers,
+                                const std::vector<std::string>& backup_items,
+                                const std::function<int(int, bool)>& key_handler) override;
+
  protected:
+  static constexpr int kMenuIndent = 4;
+
   // The margin that we don't want to use for showing texts (e.g. round screen, or screen with
   // rounded corners).
   const int margin_width_;
@@ -252,17 +256,30 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
 
   virtual bool InitTextParams();
 
-  // Displays some header text followed by a menu of items, which appears at the top of the screen
-  // (in place of any scrolling ui_print() output, if necessary).
-  virtual void StartMenu(const std::vector<std::string>& headers,
-                         const std::vector<std::string>& items, size_t initial_selection);
+  virtual bool LoadWipeDataMenuText();
+
+  // Creates a GraphicMenu with |graphic_header| and |graphic_items|. If the GraphicMenu isn't
+  // valid or it doesn't fit on the screen; falls back to create a TextMenu instead. If succeeds,
+  // returns a unique pointer to the created menu; otherwise returns nullptr.
+  virtual std::unique_ptr<Menu> CreateMenu(const GRSurface* graphic_header,
+                                           const std::vector<const GRSurface*>& graphic_items,
+                                           const std::vector<std::string>& text_headers,
+                                           const std::vector<std::string>& text_items,
+                                           size_t initial_selection) const;
+
+  // Creates a TextMenu with |text_headers| and |text_items|; and sets the menu selection to
+  // |initial_selection|.
+  virtual std::unique_ptr<Menu> CreateMenu(const std::vector<std::string>& text_headers,
+                                           const std::vector<std::string>& text_items,
+                                           size_t initial_selection) const;
+
+  // Takes the ownership of |menu| and displays it.
+  virtual size_t ShowMenu(std::unique_ptr<Menu>&& menu, bool menu_only,
+                          const std::function<int(int, bool)>& key_handler);
 
   // Sets the menu highlight to the given index, wrapping if necessary. Returns the actual item
   // selected.
   virtual int SelectMenu(int sel);
-
-  // Ends menu mode, resetting the text overlay so that ui_print() statements will be displayed.
-  virtual void EndMenu();
 
   virtual void draw_background_locked();
   virtual void draw_foreground_locked();
@@ -271,8 +288,8 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   virtual void update_screen_locked();
   virtual void update_progress_locked();
 
-  GRSurface* GetCurrentFrame() const;
-  GRSurface* GetCurrentText() const;
+  const GRSurface* GetCurrentFrame() const;
+  const GRSurface* GetCurrentText() const;
 
   void ProgressThreadLoop();
 
@@ -282,8 +299,8 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   void ClearText();
 
   void LoadAnimation();
-  void LoadBitmap(const char* filename, GRSurface** surface);
-  void LoadLocalizedBitmap(const char* filename, GRSurface** surface);
+  std::unique_ptr<GRSurface> LoadBitmap(const std::string& filename);
+  std::unique_ptr<GRSurface> LoadLocalizedBitmap(const std::string& filename);
 
   int PixelsFromDp(int dp) const;
   virtual int GetAnimationBaseline() const;
@@ -299,32 +316,42 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
   void SetColor(UIElement e) const override;
   void DrawHighlightBar(int x, int y, int width, int height) const override;
   int DrawHorizontalRule(int y) const override;
-  void DrawSurface(GRSurface* surface, int sx, int sy, int w, int h, int dx, int dy) const override;
+  void DrawSurface(const GRSurface* surface, int sx, int sy, int w, int h, int dx,
+                   int dy) const override;
   void DrawFill(int x, int y, int w, int h) const override;
-  void DrawTextIcon(int x, int y, GRSurface* surface) const override;
+  void DrawTextIcon(int x, int y, const GRSurface* surface) const override;
   int DrawTextLine(int x, int y, const std::string& line, bool bold) const override;
   int DrawTextLines(int x, int y, const std::vector<std::string>& lines) const override;
   int DrawWrappedTextLines(int x, int y, const std::vector<std::string>& lines) const override;
 
-  Icon currentIcon;
-
   // The layout to use.
   int layout_;
 
-  GRSurface* error_icon;
+  // The images that contain localized texts.
+  std::unique_ptr<GRSurface> erasing_text_;
+  std::unique_ptr<GRSurface> error_text_;
+  std::unique_ptr<GRSurface> installing_text_;
+  std::unique_ptr<GRSurface> no_command_text_;
 
-  GRSurface* erasing_text;
-  GRSurface* error_text;
-  GRSurface* installing_text;
-  GRSurface* no_command_text;
+  // Localized text images for the wipe data menu.
+  std::unique_ptr<GRSurface> wipe_data_menu_header_text_;
+  std::unique_ptr<GRSurface> try_again_text_;
+  std::unique_ptr<GRSurface> factory_data_reset_text_;
 
-  GRSurface** introFrames;
-  GRSurface** loopFrames;
+  // current_icon_ points to one of the frames in intro_frames_ or loop_frames_, indexed by
+  // current_frame_, or error_icon_.
+  Icon current_icon_;
+  std::unique_ptr<GRSurface> error_icon_;
+  std::vector<std::unique_ptr<GRSurface>> intro_frames_;
+  std::vector<std::unique_ptr<GRSurface>> loop_frames_;
+  size_t current_frame_;
+  bool intro_done_;
 
-  GRSurface* progressBarEmpty;
-  GRSurface* progressBarFill;
-  GRSurface* stageMarkerEmpty;
-  GRSurface* stageMarkerFill;
+  // progress_bar and stage_marker images.
+  std::unique_ptr<GRSurface> progress_bar_empty_;
+  std::unique_ptr<GRSurface> progress_bar_fill_;
+  std::unique_ptr<GRSurface> stage_marker_empty_;
+  std::unique_ptr<GRSurface> stage_marker_fill_;
 
   ProgressType progressBarType;
 
@@ -353,13 +380,6 @@ class ScreenRecoveryUI : public RecoveryUI, public DrawInterface {
 
   std::thread progress_thread_;
   std::atomic<bool> progress_thread_stopped_{ false };
-
-  // Number of intro frames and loop frames in the animation.
-  size_t intro_frames;
-  size_t loop_frames;
-
-  size_t current_frame;
-  bool intro_done;
 
   int stage, max_stage;
 

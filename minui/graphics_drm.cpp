@@ -51,13 +51,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <memory>
+
+#include <android-base/macros.h>
+#include <android-base/stringprintf.h>
+#include <android-base/unique_fd.h>
 #include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
 #include "minui/minui.h"
-
-#define ARRAY_SIZE(A) (sizeof(A)/sizeof(*(A)))
 
 #define find_prop_id(_res, type, Type, obj_id, prop_name, prop_id)    \
   do {                                                                \
@@ -121,9 +124,6 @@ static int atomic_add_prop_to_plane(Plane *plane_res, drmModeAtomicReq *req,
 
   return 0;
 }
-
-MinuiBackendDrm::MinuiBackendDrm()
-    : GRSurfaceDrms(), main_monitor_crtc(nullptr), main_monitor_connector(nullptr), drm_fd(-1) {}
 
 int MinuiBackendDrm::AtomicPopulatePlane(int plane, drmModeAtomicReqPtr atomic_req) {
   uint32_t src_x, src_y, src_w, src_h;
@@ -217,10 +217,6 @@ int MinuiBackendDrm::TeardownPipeline(drmModeAtomicReqPtr atomic_req) {
   return 0;
 }
 
-int MinuiBackendDrm::DrmDisableCrtc(drmModeAtomicReqPtr atomic_req) {
-  return TeardownPipeline(atomic_req);
-}
-
 int MinuiBackendDrm::SetupPipeline(drmModeAtomicReqPtr atomic_req) {
   uint32_t prop_id;
   int i, ret;
@@ -242,6 +238,109 @@ int MinuiBackendDrm::SetupPipeline(drmModeAtomicReqPtr atomic_req) {
   }
 
   return 0;
+}
+
+GRSurfaceDrm::~GRSurfaceDrm() {
+  if (mmapped_buffer_) {
+    munmap(mmapped_buffer_, row_bytes * height);
+  }
+
+  if (fb_id) {
+    if (drmModeRmFB(drm_fd_, fb_id) != 0) {
+      perror("Failed to drmModeRmFB");
+      // Falling through to free other resources.
+    }
+  }
+
+  if (handle) {
+    drm_gem_close gem_close = {};
+    gem_close.handle = handle;
+
+    if (drmIoctl(drm_fd_, DRM_IOCTL_GEM_CLOSE, &gem_close) != 0) {
+      perror("Failed to DRM_IOCTL_GEM_CLOSE");
+    }
+  }
+}
+
+static int drm_format_to_bpp(uint32_t format) {
+  switch (format) {
+    case DRM_FORMAT_ABGR8888:
+    case DRM_FORMAT_BGRA8888:
+    case DRM_FORMAT_RGBX8888:
+    case DRM_FORMAT_BGRX8888:
+    case DRM_FORMAT_XBGR8888:
+    case DRM_FORMAT_XRGB8888:
+      return 32;
+    case DRM_FORMAT_RGB565:
+      return 16;
+    default:
+      printf("Unknown format %d\n", format);
+      return 32;
+  }
+}
+
+std::unique_ptr<GRSurfaceDrm> GRSurfaceDrm::Create(int drm_fd, int width, int height) {
+  uint32_t format;
+  PixelFormat pixel_format = gr_pixel_format();
+  // PixelFormat comes in byte order, whereas DRM_FORMAT_* uses little-endian
+  // (external/libdrm/include/drm/drm_fourcc.h). Note that although drm_fourcc.h also defines a
+  // macro of DRM_FORMAT_BIG_ENDIAN, it doesn't seem to be actually supported (see the discussion
+  // in https://lists.freedesktop.org/archives/amd-gfx/2017-May/008560.html).
+  if (pixel_format == PixelFormat::ABGR) {
+    format = DRM_FORMAT_RGBA8888;
+  } else if (pixel_format == PixelFormat::BGRA) {
+    format = DRM_FORMAT_ARGB8888;
+  } else if (pixel_format == PixelFormat::RGBX) {
+    format = DRM_FORMAT_XBGR8888;
+  } else {
+    format = DRM_FORMAT_RGB565;
+  }
+
+  drm_mode_create_dumb create_dumb = {};
+  create_dumb.height = height;
+  create_dumb.width = width;
+  create_dumb.bpp = drm_format_to_bpp(format);
+  create_dumb.flags = 0;
+
+  if (drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_dumb) != 0) {
+    perror("Failed to DRM_IOCTL_MODE_CREATE_DUMB");
+    return nullptr;
+  }
+
+  // Cannot use std::make_unique to access non-public ctor.
+  auto surface = std::unique_ptr<GRSurfaceDrm>(new GRSurfaceDrm(
+      width, height, create_dumb.pitch, create_dumb.bpp / 8, drm_fd, create_dumb.handle));
+
+  uint32_t handles[4], pitches[4], offsets[4];
+
+  handles[0] = surface->handle;
+  pitches[0] = create_dumb.pitch;
+  offsets[0] = 0;
+  if (drmModeAddFB2(drm_fd, width, height, format, handles, pitches, offsets, &surface->fb_id, 0) !=
+      0) {
+    perror("Failed to drmModeAddFB2");
+    return nullptr;
+  }
+
+  drm_mode_map_dumb map_dumb = {};
+  map_dumb.handle = create_dumb.handle;
+  if (drmIoctl(drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map_dumb) != 0) {
+    perror("Failed to DRM_IOCTL_MODE_MAP_DUMB");
+    return nullptr;
+  }
+
+  auto mmapped = mmap(nullptr, surface->height * surface->row_bytes, PROT_READ | PROT_WRITE,
+                      MAP_SHARED, drm_fd, map_dumb.offset);
+  if (mmapped == MAP_FAILED) {
+    perror("Failed to mmap()");
+    return nullptr;
+  }
+  surface->mmapped_buffer_ = static_cast<uint8_t*>(mmapped);
+  return surface;
+}
+
+int MinuiBackendDrm::DrmDisableCrtc(drmModeAtomicReqPtr atomic_req) {
+  return TeardownPipeline(atomic_req);
 }
 
 int MinuiBackendDrm::DrmEnableCrtc(drmModeAtomicReqPtr atomic_req){
@@ -274,123 +373,6 @@ void MinuiBackendDrm::Blank(bool blank) {
   }
 
   drmModeAtomicFree(atomic_req);
-}
-
-void MinuiBackendDrm::DrmDestroySurface(GRSurfaceDrm* surface) {
-  if (!surface) return;
-
-  if (surface->data) {
-    munmap(surface->data, surface->row_bytes * surface->height);
-  }
-
-  if (surface->fb_id) {
-    int ret = drmModeRmFB(drm_fd, surface->fb_id);
-    if (ret) {
-      printf("drmModeRmFB failed ret=%d\n", ret);
-    }
-  }
-
-  if (surface->handle) {
-    drm_gem_close gem_close = {};
-    gem_close.handle = surface->handle;
-
-    int ret = drmIoctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
-    if (ret) {
-      printf("DRM_IOCTL_GEM_CLOSE failed ret=%d\n", ret);
-    }
-  }
-
-  delete surface;
-}
-
-static int drm_format_to_bpp(uint32_t format) {
-  switch (format) {
-    case DRM_FORMAT_ABGR8888:
-    case DRM_FORMAT_BGRA8888:
-    case DRM_FORMAT_RGBX8888:
-    case DRM_FORMAT_BGRX8888:
-    case DRM_FORMAT_XBGR8888:
-    case DRM_FORMAT_XRGB8888:
-      return 32;
-    case DRM_FORMAT_RGB565:
-      return 16;
-    default:
-      printf("Unknown format %d\n", format);
-      return 32;
-  }
-}
-
-GRSurfaceDrm* MinuiBackendDrm::DrmCreateSurface(int width, int height) {
-  GRSurfaceDrm* surface = new GRSurfaceDrm;
-  *surface = {};
-
-  uint32_t format;
-  PixelFormat pixel_format = gr_pixel_format();
-  // PixelFormat comes in byte order, whereas DRM_FORMAT_* uses little-endian
-  // (external/libdrm/include/drm/drm_fourcc.h). Note that although drm_fourcc.h also defines a
-  // macro of DRM_FORMAT_BIG_ENDIAN, it doesn't seem to be actually supported (see the discussion
-  // in https://lists.freedesktop.org/archives/amd-gfx/2017-May/008560.html).
-  if (pixel_format == PixelFormat::ABGR) {
-    format = DRM_FORMAT_RGBA8888;
-  } else if (pixel_format == PixelFormat::BGRA) {
-    format = DRM_FORMAT_ARGB8888;
-  } else if (pixel_format == PixelFormat::RGBX) {
-    format = DRM_FORMAT_XBGR8888;
-  } else {
-    format = DRM_FORMAT_RGB565;
-  }
-
-  drm_mode_create_dumb create_dumb = {};
-  create_dumb.height = height;
-  create_dumb.width = width;
-  create_dumb.bpp = drm_format_to_bpp(format);
-  create_dumb.flags = 0;
-
-  int ret = drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_dumb);
-  if (ret) {
-    printf("DRM_IOCTL_MODE_CREATE_DUMB failed ret=%d\n", ret);
-    DrmDestroySurface(surface);
-    return nullptr;
-  }
-  surface->handle = create_dumb.handle;
-
-  uint32_t handles[4], pitches[4], offsets[4];
-
-  handles[0] = surface->handle;
-  pitches[0] = create_dumb.pitch;
-  offsets[0] = 0;
-
-  ret =
-      drmModeAddFB2(drm_fd, width, height, format, handles, pitches, offsets, &(surface->fb_id), 0);
-  if (ret) {
-    printf("drmModeAddFB2 failed ret=%d\n", ret);
-    DrmDestroySurface(surface);
-    return nullptr;
-  }
-
-  drm_mode_map_dumb map_dumb = {};
-  map_dumb.handle = create_dumb.handle;
-  ret = drmIoctl(drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map_dumb);
-  if (ret) {
-    printf("DRM_IOCTL_MODE_MAP_DUMB failed ret=%d\n", ret);
-    DrmDestroySurface(surface);
-    return nullptr;
-  }
-
-  surface->height = height;
-  surface->width = width;
-  surface->row_bytes = create_dumb.pitch;
-  surface->pixel_bytes = create_dumb.bpp / 8;
-  surface->data = static_cast<unsigned char*>(mmap(nullptr, surface->height * surface->row_bytes,
-                                                   PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd,
-                                                   map_dumb.offset));
-  if (surface->data == MAP_FAILED) {
-    perror("mmap() failed");
-    DrmDestroySurface(surface);
-    return nullptr;
-  }
-
-  return surface;
 }
 
 static drmModeCrtc* find_crtc_for_connector(int fd, drmModeRes* resources,
@@ -474,7 +456,7 @@ drmModeConnector* MinuiBackendDrm::FindMainMonitor(int fd, drmModeRes* resources
   do {
     main_monitor_connector = find_used_connector_by_type(fd, resources, kConnectorPriority[i]);
     i++;
-  } while (!main_monitor_connector && i < ARRAY_SIZE(kConnectorPriority));
+  } while (!main_monitor_connector && i < arraysize(kConnectorPriority));
 
   /* If we didn't find a connector, grab the first one that is connected. */
   if (!main_monitor_connector) {
@@ -549,60 +531,53 @@ void MinuiBackendDrm::UpdatePlaneFB() {
 
 GRSurface* MinuiBackendDrm::Init() {
   drmModeRes* res = nullptr;
+  drm_fd = -1;
 
   /* Consider DRM devices in order. */
   for (int i = 0; i < DRM_MAX_MINOR; i++) {
-    char* dev_name;
-    int ret = asprintf(&dev_name, DRM_DEV_NAME, DRM_DIR_NAME, i);
-    if (ret < 0) continue;
+    auto dev_name = android::base::StringPrintf(DRM_DEV_NAME, DRM_DIR_NAME, i);
+    android::base::unique_fd fd(open(dev_name.c_str(), O_RDWR));
+    if (fd == -1) continue;
 
-    drm_fd = open(dev_name, O_RDWR, 0);
-    free(dev_name);
-    if (drm_fd < 0) continue;
-
-    uint64_t cap = 0;
     /* We need dumb buffers. */
-    ret = drmGetCap(drm_fd, DRM_CAP_DUMB_BUFFER, &cap);
-    if (ret || cap == 0) {
-      close(drm_fd);
+    if (uint64_t cap = 0; drmGetCap(fd.get(), DRM_CAP_DUMB_BUFFER, &cap) != 0 || cap == 0) {
       continue;
     }
 
-    res = drmModeGetResources(drm_fd);
+    res = drmModeGetResources(fd.get());
     if (!res) {
-      close(drm_fd);
       continue;
     }
 
     /* Use this device if it has at least one connected monitor. */
     if (res->count_crtcs > 0 && res->count_connectors > 0) {
-      if (find_first_connected_connector(drm_fd, res)) break;
+      if (find_first_connected_connector(fd.get(), res)) {
+        drm_fd = fd.release();
+        break;
+      }
     }
 
     drmModeFreeResources(res);
-    close(drm_fd);
     res = nullptr;
   }
 
-  if (drm_fd < 0 || res == nullptr) {
-    perror("cannot find/open a drm device");
+  if (drm_fd == -1 || res == nullptr) {
+    perror("Failed to find/open a drm device");
     return nullptr;
   }
 
   uint32_t selected_mode;
   main_monitor_connector = FindMainMonitor(drm_fd, res, &selected_mode);
-
   if (!main_monitor_connector) {
-    printf("main_monitor_connector not found\n");
+    fprintf(stderr, "Failed to find main_monitor_connector\n");
     drmModeFreeResources(res);
     close(drm_fd);
     return nullptr;
   }
 
   main_monitor_crtc = find_crtc_for_connector(drm_fd, res, main_monitor_connector);
-
   if (!main_monitor_crtc) {
-    printf("main_monitor_crtc not found\n");
+    fprintf(stderr, "Failed to find main_monitor_crtc\n");
     drmModeFreeResources(res);
     close(drm_fd);
     return nullptr;
@@ -617,10 +592,9 @@ GRSurface* MinuiBackendDrm::Init() {
 
   drmModeFreeResources(res);
 
-  GRSurfaceDrms[0] = DrmCreateSurface(width, height);
-  GRSurfaceDrms[1] = DrmCreateSurface(width, height);
+  GRSurfaceDrms[0] = GRSurfaceDrm::Create(drm_fd, width, height);
+  GRSurfaceDrms[1] = GRSurfaceDrm::Create(drm_fd, width, height);
   if (!GRSurfaceDrms[0] || !GRSurfaceDrms[1]) {
-    // GRSurfaceDrms and drm_fd should be freed in d'tor.
     return nullptr;
   }
 
@@ -707,21 +681,21 @@ GRSurface* MinuiBackendDrm::Init() {
 
   Blank(false);
 
-  return GRSurfaceDrms[0];
+  return GRSurfaceDrms[0].get();
 }
 
 GRSurface* MinuiBackendDrm::Flip() {
   UpdatePlaneFB();
 
   current_buffer = 1 - current_buffer;
-  return GRSurfaceDrms[current_buffer];
+  return GRSurfaceDrms[current_buffer].get();
 }
 
 MinuiBackendDrm::~MinuiBackendDrm() {
   Blank(true);
   drmModeDestroyPropertyBlob(drm_fd, crtc_res.mode_blob_id);
-  DrmDestroySurface(GRSurfaceDrms[0]);
-  DrmDestroySurface(GRSurfaceDrms[1]);
+  drmModeFreeCrtc(main_monitor_crtc);
+  drmModeFreeConnector(main_monitor_connector);
   close(drm_fd);
   drm_fd = -1;
 }

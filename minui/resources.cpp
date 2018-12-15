@@ -37,18 +37,26 @@
 
 #include "minui/minui.h"
 
-#define SURFACE_DATA_ALIGNMENT 8
-
 static std::string g_resource_dir{ "/res/images" };
 
-static GRSurface* malloc_surface(size_t data_size) {
-    size_t size = sizeof(GRSurface) + data_size + SURFACE_DATA_ALIGNMENT;
-    unsigned char* temp = static_cast<unsigned char*>(malloc(size));
-    if (temp == NULL) return NULL;
-    GRSurface* surface = reinterpret_cast<GRSurface*>(temp);
-    surface->data = temp + sizeof(GRSurface) +
-        (SURFACE_DATA_ALIGNMENT - (sizeof(GRSurface) % SURFACE_DATA_ALIGNMENT));
-    return surface;
+std::unique_ptr<GRSurface> GRSurface::Create(int width, int height, int row_bytes, int pixel_bytes,
+                                             size_t data_size) {
+  static constexpr size_t kSurfaceDataAlignment = 8;
+  // Cannot use std::make_unique to access non-public ctor.
+  auto result = std::unique_ptr<GRSurface>(new GRSurface(width, height, row_bytes, pixel_bytes));
+  result->data_size_ =
+      (data_size + kSurfaceDataAlignment - 1) / kSurfaceDataAlignment * kSurfaceDataAlignment;
+  result->data_.reset(
+      static_cast<uint8_t*>(aligned_alloc(kSurfaceDataAlignment, result->data_size_)));
+  if (!result->data_) return nullptr;
+  return result;
+}
+
+std::unique_ptr<GRSurface> GRSurface::Clone() const {
+  auto result = GRSurface::Create(width, height, row_bytes, pixel_bytes, data_size_);
+  if (!result) return nullptr;
+  memcpy(result->data(), data(), data_size_);
+  return result;
 }
 
 PngHandler::PngHandler(const std::string& name) {
@@ -63,7 +71,7 @@ PngHandler::PngHandler(const std::string& name) {
     return;
   }
 
-  unsigned char header[8];
+  uint8_t header[8];
   size_t bytesRead = fread(header, 1, sizeof(header), png_fp_.get());
   if (bytesRead != sizeof(header)) {
     error_code_ = -2;
@@ -126,70 +134,49 @@ PngHandler::~PngHandler() {
   }
 }
 
-// "display" surfaces are transformed into the framebuffer's required
-// pixel format (currently only RGBX is supported) at load time, so
-// gr_blit() can be nothing more than a memcpy() for each row.  The
-// next two functions are the only ones that know anything about the
-// framebuffer pixel format; they need to be modified if the
-// framebuffer format changes (but nothing else should).
+// "display" surfaces are transformed into the framebuffer's required pixel format (currently only
+// RGBX is supported) at load time, so gr_blit() can be nothing more than a memcpy() for each row.
 
-// Allocate and return a GRSurface* sufficient for storing an image of
-// the indicated size in the framebuffer pixel format.
-static GRSurface* init_display_surface(png_uint_32 width, png_uint_32 height) {
-    GRSurface* surface = malloc_surface(width * height * 4);
-    if (surface == NULL) return NULL;
-
-    surface->width = width;
-    surface->height = height;
-    surface->row_bytes = width * 4;
-    surface->pixel_bytes = 4;
-
-    return surface;
-}
-
-// Copy 'input_row' to 'output_row', transforming it to the
-// framebuffer pixel format.  The input format depends on the value of
-// 'channels':
+// Copies 'input_row' to 'output_row', transforming it to the framebuffer pixel format. The input
+// format depends on the value of 'channels':
 //
 //   1 - input is 8-bit grayscale
 //   3 - input is 24-bit RGB
 //   4 - input is 32-bit RGBA/RGBX
 //
 // 'width' is the number of pixels in the row.
-static void transform_rgb_to_draw(unsigned char* input_row,
-                                  unsigned char* output_row,
-                                  int channels, int width) {
-    int x;
-    unsigned char* ip = input_row;
-    unsigned char* op = output_row;
+static void TransformRgbToDraw(const uint8_t* input_row, uint8_t* output_row, int channels,
+                               int width) {
+  const uint8_t* ip = input_row;
+  uint8_t* op = output_row;
 
-    switch (channels) {
-        case 1:
-            // expand gray level to RGBX
-            for (x = 0; x < width; ++x) {
-                *op++ = *ip;
-                *op++ = *ip;
-                *op++ = *ip;
-                *op++ = 0xff;
-                ip++;
-            }
-            break;
+  switch (channels) {
+    case 1:
+      // expand gray level to RGBX
+      for (int x = 0; x < width; ++x) {
+        *op++ = *ip;
+        *op++ = *ip;
+        *op++ = *ip;
+        *op++ = 0xff;
+        ip++;
+      }
+      break;
 
-        case 3:
-            // expand RGBA to RGBX
-            for (x = 0; x < width; ++x) {
-                *op++ = *ip++;
-                *op++ = *ip++;
-                *op++ = *ip++;
-                *op++ = 0xff;
-            }
-            break;
+    case 3:
+      // expand RGBA to RGBX
+      for (int x = 0; x < width; ++x) {
+        *op++ = *ip++;
+        *op++ = *ip++;
+        *op++ = *ip++;
+        *op++ = 0xff;
+      }
+      break;
 
-        case 4:
-            // copy RGBA to RGBX
-            memcpy(output_row, input_row, width*4);
-            break;
-    }
+    case 4:
+      // copy RGBA to RGBX
+      memcpy(output_row, input_row, width * 4);
+      break;
+  }
 }
 
 int res_create_display_surface(const char* name, GRSurface** pSurface) {
@@ -202,7 +189,7 @@ int res_create_display_surface(const char* name, GRSurface** pSurface) {
   png_uint_32 width = png_handler.width();
   png_uint_32 height = png_handler.height();
 
-  GRSurface* surface = init_display_surface(width, height);
+  auto surface = GRSurface::Create(width, height, width * 4, 4, width * height * 4);
   if (!surface) {
     return -8;
   }
@@ -213,13 +200,13 @@ int res_create_display_surface(const char* name, GRSurface** pSurface) {
   }
 
   for (png_uint_32 y = 0; y < height; ++y) {
-    std::vector<unsigned char> p_row(width * 4);
+    std::vector<uint8_t> p_row(width * 4);
     png_read_row(png_ptr, p_row.data(), nullptr);
-    transform_rgb_to_draw(p_row.data(), surface->data + y * surface->row_bytes,
-                          png_handler.channels(), width);
+    TransformRgbToDraw(p_row.data(), surface->data() + y * surface->row_bytes,
+                       png_handler.channels(), width);
   }
 
-  *pSurface = surface;
+  *pSurface = surface.release();
 
   return 0;
 }
@@ -272,11 +259,14 @@ int res_create_multi_display_surface(const char* name, int* frames, int* fps,
     goto exit;
   }
   for (int i = 0; i < *frames; ++i) {
-    surface[i] = init_display_surface(width, height / *frames);
-    if (!surface[i]) {
+    auto height_per_frame = height / *frames;
+    auto created_surface =
+        GRSurface::Create(width, height_per_frame, width * 4, 4, width * height_per_frame);
+    if (!created_surface) {
       result = -8;
       goto exit;
     }
+    surface[i] = created_surface.release();
   }
 
   if (gr_pixel_format() == PixelFormat::ABGR || gr_pixel_format() == PixelFormat::BGRA) {
@@ -284,11 +274,11 @@ int res_create_multi_display_surface(const char* name, int* frames, int* fps,
   }
 
   for (png_uint_32 y = 0; y < height; ++y) {
-    std::vector<unsigned char> p_row(width * 4);
+    std::vector<uint8_t> p_row(width * 4);
     png_read_row(png_ptr, p_row.data(), nullptr);
     int frame = y % *frames;
-    unsigned char* out_row = surface[frame]->data + (y / *frames) * surface[frame]->row_bytes;
-    transform_rgb_to_draw(p_row.data(), out_row, png_handler.channels(), width);
+    uint8_t* out_row = surface[frame]->data() + (y / *frames) * surface[frame]->row_bytes;
+    TransformRgbToDraw(p_row.data(), out_row, png_handler.channels(), width);
   }
 
   *pSurface = surface;
@@ -319,14 +309,10 @@ int res_create_alpha_surface(const char* name, GRSurface** pSurface) {
   png_uint_32 width = png_handler.width();
   png_uint_32 height = png_handler.height();
 
-  GRSurface* surface = malloc_surface(width * height);
+  auto surface = GRSurface::Create(width, height, width, 1, width * height);
   if (!surface) {
     return -8;
   }
-  surface->width = width;
-  surface->height = height;
-  surface->row_bytes = width;
-  surface->pixel_bytes = 1;
 
   PixelFormat pixel_format = gr_pixel_format();
   if (pixel_format == PixelFormat::ABGR || pixel_format == PixelFormat::BGRA) {
@@ -334,11 +320,11 @@ int res_create_alpha_surface(const char* name, GRSurface** pSurface) {
   }
 
   for (png_uint_32 y = 0; y < height; ++y) {
-    unsigned char* p_row = surface->data + y * surface->row_bytes;
+    uint8_t* p_row = surface->data() + y * surface->row_bytes;
     png_read_row(png_ptr, p_row, nullptr);
   }
 
-  *pSurface = surface;
+  *pSurface = surface.release();
 
   return 0;
 }
@@ -383,7 +369,7 @@ std::vector<std::string> get_locales_in_png(const std::string& png_name) {
   }
 
   std::vector<std::string> result;
-  std::vector<unsigned char> row(png_handler.width());
+  std::vector<uint8_t> row(png_handler.width());
   for (png_uint_32 y = 0; y < png_handler.height(); ++y) {
     png_read_row(png_handler.png_ptr(), row.data(), nullptr);
     int h = (row[3] << 8) | row[2];
@@ -419,7 +405,7 @@ int res_create_localized_alpha_surface(const char* name,
   png_uint_32 height = png_handler.height();
 
   for (png_uint_32 y = 0; y < height; ++y) {
-    std::vector<unsigned char> row(width);
+    std::vector<uint8_t> row(width);
     png_read_row(png_ptr, row.data(), nullptr);
     int w = (row[1] << 8) | row[0];
     int h = (row[3] << 8) | row[2];
@@ -429,21 +415,17 @@ int res_create_localized_alpha_surface(const char* name,
     if (y + 1 + h >= height || matches_locale(loc, locale)) {
       printf("  %20s: %s (%d x %d @ %d)\n", name, loc, w, h, y);
 
-      GRSurface* surface = malloc_surface(w * h);
+      auto surface = GRSurface::Create(w, h, w, 1, w * h);
       if (!surface) {
         return -8;
       }
-      surface->width = w;
-      surface->height = h;
-      surface->row_bytes = w;
-      surface->pixel_bytes = 1;
 
       for (int i = 0; i < h; ++i, ++y) {
         png_read_row(png_ptr, row.data(), nullptr);
-        memcpy(surface->data + i * w, row.data(), w);
+        memcpy(surface->data() + i * w, row.data(), w);
       }
 
-      *pSurface = surface;
+      *pSurface = surface.release();
       break;
     }
 
