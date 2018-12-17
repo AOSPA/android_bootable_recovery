@@ -1277,9 +1277,15 @@ size_t ScreenRecoveryUI::ShowMenu(std::unique_ptr<Menu>&& menu, bool menu_only,
           break;
         case Device::kNoAction:
           break;
+        case Device::kDoSideload:
+          chosen_item = Device::kDoSideload;
+          break;
       }
     } else if (!menu_only) {
       chosen_item = action;
+    }
+    if (chosen_item == Device::kDoSideload) {
+      break;
     }
   }
 
