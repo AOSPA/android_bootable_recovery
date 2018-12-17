@@ -35,6 +35,7 @@ class Device {
   static constexpr const int kHighlightUp = -2;
   static constexpr const int kHighlightDown = -3;
   static constexpr const int kInvokeItem = -4;
+  static constexpr const int kDoSideload = -5;
 
   // ENTER vs REBOOT: The latter will trigger a reboot that goes through bootloader, which allows
   // using a new bootloader / recovery image if applicable. For example, REBOOT_RESCUE goes from
