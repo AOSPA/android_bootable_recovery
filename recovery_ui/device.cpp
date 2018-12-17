@@ -92,6 +92,9 @@ int Device::HandleMenuKey(int key, bool visible) {
     case KEY_POWER:
       return kInvokeItem;
 
+    case KEY_AGAIN:
+      return kDoSideload;
+
     default:
       // If you have all of the above buttons, any other buttons
       // are ignored. Otherwise, any button cycles the highlight.
