@@ -32,6 +32,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/mount.h>
+#include <fs_mgr.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -73,6 +76,8 @@ static constexpr const char* COMMAND_FILE = "/cache/recovery/command";
 static constexpr const char* LAST_KMSG_FILE = "/cache/recovery/last_kmsg";
 static constexpr const char* LAST_LOG_FILE = "/cache/recovery/last_log";
 static constexpr const char* LOCALE_FILE = "/cache/recovery/last_locale";
+
+#define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
 
 static constexpr const char* CACHE_ROOT = "/cache";
 static constexpr const char* DATA_ROOT = "/data";
@@ -656,6 +661,48 @@ static void run_graphics_test() {
   ui->ShowText(true);
 }
 
+static int is_ufs_dev()
+{
+    char bootdevice[PROPERTY_VALUE_MAX] = {0};
+    property_get("ro.boot.bootdevice", bootdevice, "N/A");
+    ui->Print("ro.boot.bootdevice is: %s\n",bootdevice);
+    if (strlen(bootdevice) < strlen(".ufshc") + 1)
+        return 0;
+    return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
+                            ".ufshc",
+                            sizeof(".ufshc")));
+}
+
+static int do_sdcard_mount_for_ufs()
+{
+    int rc = 0;
+    ui->Print("Update via sdcard on UFS dev.Mounting card\n");
+    Volume *v = volume_for_mount_point("/sdcard");
+    if (v == nullptr) {
+            ui->Print("Unknown volume for /sdcard.Check fstab\n");
+            goto error;
+    }
+    if (strncmp(v->fs_type, "vfat", sizeof("vfat"))) {
+            ui->Print("Unsupported format on the sdcard: %s\n",
+                            v->fs_type);
+            goto error;
+    }
+    rc = mount(UFS_DEV_SDCARD_BLK_PATH,
+                    v->mount_point,
+                    v->fs_type,
+                    v->flags,
+                    v->fs_options);
+    if (rc) {
+            ui->Print("Failed to mount sdcard : %s\n",
+                            strerror(errno));
+            goto error;
+    }
+    ui->Print("Done mounting sdcard\n");
+    return 0;
+error:
+    return -1;
+}
+
 // How long (in seconds) we wait for the fuse-provided package file to
 // appear, before timing out.
 #define SDCARD_INSTALL_TIMEOUT 10
@@ -663,9 +710,16 @@ static void run_graphics_test() {
 static int apply_from_sdcard(Device* device, bool* wipe_cache) {
     modified_flash = true;
 
-    if (ensure_path_mounted(SDCARD_ROOT) != 0) {
-        ui->Print("\n-- Couldn't mount %s.\n", SDCARD_ROOT);
-        return INSTALL_ERROR;
+    if (is_ufs_dev()) {
+            if (do_sdcard_mount_for_ufs() != 0) {
+                    ui->Print("\nFailed to mount sdcard\n");
+                    return INSTALL_ERROR;
+            }
+    } else  {
+             if (ensure_path_mounted(SDCARD_ROOT) != 0) {
+                 ui->Print("\n-- Couldn't mount %s.\n", SDCARD_ROOT);
+              return INSTALL_ERROR;
+             }
     }
 
     std::string path = browse_directory(SDCARD_ROOT, device);
@@ -1028,6 +1082,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   std::string locale;
 
   auto args_to_parse = StringVectorToNullTerminatedArray(args);
+  int status = INSTALL_SUCCESS;
 
   if (has_cache && ensure_path_mounted(CACHE_ROOT) == 0) {
   //Create /cache/recovery specifically if it is not created
@@ -1121,8 +1176,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   printf("\n");
 
   ui->Print("Supported API: %d\n", kRecoveryApiVersion);
-
-  int status = INSTALL_SUCCESS;
 
   if (update_package != nullptr) {
     // It's not entirely true that we will modify the flash. But we want
@@ -1240,6 +1293,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     ui->SetBackground(RecoveryUI::NO_COMMAND);
   }
 
+//error:
+//  if (is_ro_debuggable()) ui->ShowText(true);
   if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
     ui->SetBackground(RecoveryUI::ERROR);
     if (!ui->IsTextVisible()) {
