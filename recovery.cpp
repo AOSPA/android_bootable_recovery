@@ -299,7 +299,7 @@ bool SetUsbConfig(const std::string& state) {
 
 // Returns the selected filename, or an empty string.
 static std::string browse_directory(const std::string& path, Device* device) {
-  ensure_path_mounted(path.c_str());
+  ensure_path_mounted(path);
 
   std::unique_ptr<DIR, decltype(&closedir)> d(opendir(path.c_str()), closedir);
   if (!d) {
@@ -374,7 +374,14 @@ static bool yes_no(Device* device, const char* question1, const char* question2)
 }
 
 static bool ask_to_wipe_data(Device* device) {
-  return yes_no(device, "Wipe all user data?", "  THIS CAN NOT BE UNDONE!");
+  std::vector<std::string> headers{ "Wipe all user data?", "  THIS CAN NOT BE UNDONE!" };
+  std::vector<std::string> items{ " Cancel", " Factory data reset" };
+
+  size_t chosen_item = ui->ShowPromptWipeDataConfirmationMenu(
+      headers, items,
+      std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+
+  return (chosen_item == 1);
 }
 
 // Return true on success.
@@ -425,7 +432,6 @@ static InstallResult prompt_and_wipe_data(Device* device) {
       return INSTALL_SUCCESS;  // Just reboot, no wipe; not a failure, user asked for it
     }
 
-    // TODO(xunchang) localize the confirmation texts also.
     if (ask_to_wipe_data(device)) {
       if (wipe_data(device)) {
         return INSTALL_SUCCESS;
@@ -577,7 +583,7 @@ static void choose_recovery_file(Device* device) {
           log_file += "." + std::to_string(i);
         }
 
-        if (ensure_path_mounted(log_file.c_str()) == 0 && access(log_file.c_str(), R_OK) == 0) {
+        if (ensure_path_mounted(log_file) == 0 && access(log_file.c_str(), R_OK) == 0) {
           entries.push_back(std::move(log_file));
         }
       };
@@ -890,7 +896,7 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
       }
       case Device::MOUNT_SYSTEM:
         // the system partition is mounted at /mnt/system
-        if (ensure_path_mounted_at(get_system_root().c_str(), "/mnt/system") != -1) {
+        if (ensure_path_mounted_at(get_system_root(), "/mnt/system") != -1) {
           ui->Print("Mounted /system.\n");
         }
         break;
