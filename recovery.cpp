@@ -687,16 +687,16 @@ static int do_sdcard_mount_for_ufs()
             ui->Print("Unknown volume for /sdcard.Check fstab\n");
             goto error;
     }
-    if (strncmp(v->fs_type, "vfat", sizeof("vfat"))) {
+    if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
             ui->Print("Unsupported format on the sdcard: %s\n",
-                            v->fs_type);
+                            v->fs_type.c_str());
             goto error;
     }
     rc = mount(UFS_DEV_SDCARD_BLK_PATH,
-                    v->mount_point,
-                    v->fs_type,
+                    v->mount_point.c_str(),
+                    v->fs_type.c_str(),
                     v->flags,
-                    v->fs_options);
+                    v->fs_options.c_str());
     if (rc) {
             ui->Print("Failed to mount sdcard : %s\n",
                             strerror(errno));
