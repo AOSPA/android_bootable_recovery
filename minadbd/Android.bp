@@ -15,12 +15,13 @@
 cc_defaults {
     name: "minadbd_defaults",
 
-    cpp_std: "gnu++17",
     cflags: [
         "-DADB_HOST=0",
         "-Wall",
         "-Werror",
     ],
+
+    cpp_std: "experimental",
 
     include_dirs: [
         "system/core/adb",

@@ -28,6 +28,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.RecoverySystem;
 import android.os.ResultReceiver;
+import android.os.UpdateEngine;
 import android.util.Log;
 
 import com.example.android.systemupdatersample.PayloadSpec;
@@ -41,7 +42,9 @@ import com.google.common.collect.ImmutableSet;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Optional;
 
 /**
@@ -49,10 +52,10 @@ import java.util.Optional;
  * without downloading the whole package. And it constructs {@link PayloadSpec}.
  * All this work required to install streaming A/B updates.
  *
- * PrepareStreamingService runs on it's own thread. It will notify activity
+ * PrepareUpdateService runs on it's own thread. It will notify activity
  * using interface {@link UpdateResultCallback} when update is ready to install.
  */
-public class PrepareStreamingService extends IntentService {
+public class PrepareUpdateService extends IntentService {
 
     /**
      * UpdateResultCallback result codes.
@@ -61,62 +64,63 @@ public class PrepareStreamingService extends IntentService {
     public static final int RESULT_CODE_ERROR = 1;
 
     /**
-     * This interface is used to send results from {@link PrepareStreamingService} to
+     * Extra params that will be sent to IntentService.
+     */
+    public static final String EXTRA_PARAM_CONFIG = "config";
+    public static final String EXTRA_PARAM_RESULT_RECEIVER = "result-receiver";
+
+    /**
+     * This interface is used to send results from {@link PrepareUpdateService} to
      * {@code MainActivity}.
      */
     public interface UpdateResultCallback {
-
         /**
          * Invoked when files are downloaded and payload spec is constructed.
          *
-         * @param resultCode result code, values are defined in {@link PrepareStreamingService}
+         * @param resultCode  result code, values are defined in {@link PrepareUpdateService}
          * @param payloadSpec prepared payload spec for streaming update
          */
         void onReceiveResult(int resultCode, PayloadSpec payloadSpec);
     }
 
     /**
-     * Starts PrepareStreamingService.
+     * Starts PrepareUpdateService.
      *
-     * @param context application context
-     * @param config update config
+     * @param context        application context
+     * @param config         update config
      * @param resultCallback callback that will be called when the update is ready to be installed
      */
     public static void startService(Context context,
             UpdateConfig config,
+            Handler handler,
             UpdateResultCallback resultCallback) {
-        Log.d(TAG, "Starting PrepareStreamingService");
-        ResultReceiver receiver = new CallbackResultReceiver(new Handler(), resultCallback);
-        Intent intent = new Intent(context, PrepareStreamingService.class);
+        Log.d(TAG, "Starting PrepareUpdateService");
+        ResultReceiver receiver = new CallbackResultReceiver(handler, resultCallback);
+        Intent intent = new Intent(context, PrepareUpdateService.class);
         intent.putExtra(EXTRA_PARAM_CONFIG, config);
         intent.putExtra(EXTRA_PARAM_RESULT_RECEIVER, receiver);
         context.startService(intent);
     }
 
-    public PrepareStreamingService() {
+    public PrepareUpdateService() {
         super(TAG);
     }
 
-    private static final String TAG = "PrepareStreamingService";
-
-    /**
-     * Extra params that will be sent from Activity to IntentService.
-     */
-    private static final String EXTRA_PARAM_CONFIG = "config";
-    private static final String EXTRA_PARAM_RESULT_RECEIVER = "result-receiver";
+    private static final String TAG = "PrepareUpdateService";
 
     /**
      * The files that should be downloaded before streaming.
      */
     private static final ImmutableSet<String> PRE_STREAMING_FILES_SET =
             ImmutableSet.of(
-                PackageFiles.CARE_MAP_FILE_NAME,
-                PackageFiles.COMPATIBILITY_ZIP_FILE_NAME,
-                PackageFiles.METADATA_FILE_NAME,
-                PackageFiles.PAYLOAD_PROPERTIES_FILE_NAME
+                    PackageFiles.CARE_MAP_FILE_NAME,
+                    PackageFiles.COMPATIBILITY_ZIP_FILE_NAME,
+                    PackageFiles.METADATA_FILE_NAME,
+                    PackageFiles.PAYLOAD_PROPERTIES_FILE_NAME
             );
 
     private final PayloadSpecs mPayloadSpecs = new PayloadSpecs();
+    private final UpdateEngine mUpdateEngine = new UpdateEngine();
 
     @Override
     protected void onHandleIntent(Intent intent) {
@@ -141,6 +145,17 @@ public class PrepareStreamingService extends IntentService {
      */
     private PayloadSpec execute(UpdateConfig config)
             throws IOException, PreparationFailedException {
+
+        if (config.getAbConfig().getVerifyPayloadMetadata()) {
+            Log.i(TAG, "Verifying payload metadata with UpdateEngine.");
+            if (!verifyPayloadMetadata(config)) {
+                throw new PreparationFailedException("Payload metadata is not compatible");
+            }
+        }
+
+        if (config.getInstallType() == UpdateConfig.AB_INSTALL_TYPE_NON_STREAMING) {
+            return mPayloadSpecs.forNonStreaming(config.getUpdatePackageFile());
+        }
 
         downloadPreStreamingFiles(config, OTA_PACKAGE_DIR);
 
@@ -173,9 +188,52 @@ public class PrepareStreamingService extends IntentService {
     }
 
     /**
+     * Downloads only payload_metadata.bin and verifies with
+     * {@link UpdateEngine#verifyPayloadMetadata}.
+     * Returns {@code true} if the payload is verified or the result is unknown because of
+     * exception from UpdateEngine.
+     * By downloading only small portion of the package, it allows to verify if UpdateEngine
+     * will install the update.
+     */
+    private boolean verifyPayloadMetadata(UpdateConfig config) {
+        Optional<UpdateConfig.PackageFile> metadataPackageFile =
+                Arrays.stream(config.getAbConfig().getPropertyFiles())
+                        .filter(p -> p.getFilename().equals(
+                                PackageFiles.PAYLOAD_METADATA_FILE_NAME))
+                        .findFirst();
+        if (!metadataPackageFile.isPresent()) {
+            Log.w(TAG, String.format("ab_config.property_files doesn't contain %s",
+                    PackageFiles.PAYLOAD_METADATA_FILE_NAME));
+            return true;
+        }
+        Path metadataPath = Paths.get(OTA_PACKAGE_DIR, PackageFiles.PAYLOAD_METADATA_FILE_NAME);
+        try {
+            Files.deleteIfExists(metadataPath);
+            FileDownloader d = new FileDownloader(
+                    config.getUrl(),
+                    metadataPackageFile.get().getOffset(),
+                    metadataPackageFile.get().getSize(),
+                    metadataPath.toFile());
+            d.download();
+        } catch (IOException e) {
+            Log.w(TAG, String.format("Downloading %s from %s failed",
+                    PackageFiles.PAYLOAD_METADATA_FILE_NAME,
+                    config.getUrl()), e);
+            return true;
+        }
+        try {
+            return mUpdateEngine.verifyPayloadMetadata(metadataPath.toAbsolutePath().toString());
+        } catch (Exception e) {
+            Log.w(TAG, "UpdateEngine#verifyPayloadMetadata failed", e);
+            return true;
+        }
+    }
+
+    /**
      * Downloads files defined in {@link UpdateConfig#getAbConfig()}
      * and exists in {@code PRE_STREAMING_FILES_SET}, and put them
      * in directory {@code dir}.
+     *
      * @throws IOException when can't download a file
      */
     private void downloadPreStreamingFiles(UpdateConfig config, String dir)
@@ -212,7 +270,7 @@ public class PrepareStreamingService extends IntentService {
     }
 
     /**
-     * Used by {@link PrepareStreamingService} to pass {@link PayloadSpec}
+     * Used by {@link PrepareUpdateService} to pass {@link PayloadSpec}
      * to {@link UpdateResultCallback#onReceiveResult}.
      */
     private static class CallbackResultReceiver extends ResultReceiver {
