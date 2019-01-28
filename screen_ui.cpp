@@ -252,6 +252,7 @@ int GraphicMenu::DrawItems(int x, int y, int screen_width, bool long_press) cons
 
     draw_funcs_.SetColor(UIElement::MENU);
   }
+  offset += draw_funcs_.DrawHorizontalRule(y + offset);
 
   return offset;
 }
@@ -282,14 +283,14 @@ bool GraphicMenu::ValidateGraphicSurface(size_t max_width, size_t max_height, in
   }
 
   if (surface->pixel_bytes != 1 || surface->width != surface->row_bytes) {
-    fprintf(stderr, "Invalid graphic surface, pixel bytes: %d, width: %d row_bytes: %d",
+    fprintf(stderr, "Invalid graphic surface, pixel bytes: %zu, width: %zu row_bytes: %zu",
             surface->pixel_bytes, surface->width, surface->row_bytes);
     return false;
   }
 
   if (surface->width > max_width || surface->height > max_height - y) {
     fprintf(stderr,
-            "Graphic surface doesn't fit into the screen. width: %d, height: %d, max_width: %zu,"
+            "Graphic surface doesn't fit into the screen. width: %zu, height: %zu, max_width: %zu,"
             " max_height: %zu, vertical offset: %d\n",
             surface->width, surface->height, max_width, max_height, y);
     return false;
@@ -844,9 +845,13 @@ bool ScreenRecoveryUI::InitTextParams() {
   return true;
 }
 
-// TODO(xunchang) load localized text icons for the menu. (Init for screenRecoveryUI but
-// not wearRecoveryUI).
 bool ScreenRecoveryUI::LoadWipeDataMenuText() {
+  // Ignores the errors since the member variables will stay as nullptr.
+  cancel_wipe_data_text_ = LoadLocalizedBitmap("cancel_wipe_data_text");
+  factory_data_reset_text_ = LoadLocalizedBitmap("factory_data_reset_text");
+  try_again_text_ = LoadLocalizedBitmap("try_again_text");
+  wipe_data_confirmation_text_ = LoadLocalizedBitmap("wipe_data_confirmation_text");
+  wipe_data_menu_header_text_ = LoadLocalizedBitmap("wipe_data_menu_header_text");
   return true;
 }
 
@@ -1248,6 +1253,20 @@ size_t ScreenRecoveryUI::ShowPromptWipeDataMenu(const std::vector<std::string>& 
   }
 
   return ShowMenu(std::move(wipe_data_menu), true, key_handler);
+}
+
+size_t ScreenRecoveryUI::ShowPromptWipeDataConfirmationMenu(
+    const std::vector<std::string>& backup_headers, const std::vector<std::string>& backup_items,
+    const std::function<int(int, bool)>& key_handler) {
+  auto confirmation_menu =
+      CreateMenu(wipe_data_confirmation_text_.get(),
+                 { cancel_wipe_data_text_.get(), factory_data_reset_text_.get() }, backup_headers,
+                 backup_items, 0);
+  if (confirmation_menu == nullptr) {
+    return 0;
+  }
+
+  return ShowMenu(std::move(confirmation_menu), true, key_handler);
 }
 
 bool ScreenRecoveryUI::IsTextVisible() {

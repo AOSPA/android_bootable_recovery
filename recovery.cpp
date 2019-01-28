@@ -32,6 +32,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/mount.h>
+#include <fs_mgr.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -74,11 +77,12 @@ static constexpr const char* LAST_KMSG_FILE = "/cache/recovery/last_kmsg";
 static constexpr const char* LAST_LOG_FILE = "/cache/recovery/last_log";
 static constexpr const char* LOCALE_FILE = "/cache/recovery/last_locale";
 
+#define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
+
 static constexpr const char* CACHE_ROOT = "/cache";
 static constexpr const char* DATA_ROOT = "/data";
 static constexpr const char* METADATA_ROOT = "/metadata";
 static constexpr const char* SDCARD_ROOT = "/sdcard";
-static constexpr const char* SYSTEM_ROOT = "/system";
 
 // We define RECOVERY_API_VERSION in Android.mk, which will be picked up by build system and packed
 // into target_files.zip. Assert the version defined in code and in Android.mk are consistent.
@@ -295,7 +299,7 @@ bool SetUsbConfig(const std::string& state) {
 
 // Returns the selected filename, or an empty string.
 static std::string browse_directory(const std::string& path, Device* device) {
-  ensure_path_mounted(path.c_str());
+  ensure_path_mounted(path);
 
   std::unique_ptr<DIR, decltype(&closedir)> d(opendir(path.c_str()), closedir);
   if (!d) {
@@ -370,7 +374,14 @@ static bool yes_no(Device* device, const char* question1, const char* question2)
 }
 
 static bool ask_to_wipe_data(Device* device) {
-  return yes_no(device, "Wipe all user data?", "  THIS CAN NOT BE UNDONE!");
+  std::vector<std::string> headers{ "Wipe all user data?", "  THIS CAN NOT BE UNDONE!" };
+  std::vector<std::string> items{ " Cancel", " Factory data reset" };
+
+  size_t chosen_item = ui->ShowPromptWipeDataConfirmationMenu(
+      headers, items,
+      std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+
+  return (chosen_item == 1);
 }
 
 // Return true on success.
@@ -421,7 +432,6 @@ static InstallResult prompt_and_wipe_data(Device* device) {
       return INSTALL_SUCCESS;  // Just reboot, no wipe; not a failure, user asked for it
     }
 
-    // TODO(xunchang) localize the confirmation texts also.
     if (ask_to_wipe_data(device)) {
       if (wipe_data(device)) {
         return INSTALL_SUCCESS;
@@ -573,7 +583,7 @@ static void choose_recovery_file(Device* device) {
           log_file += "." + std::to_string(i);
         }
 
-        if (ensure_path_mounted(log_file.c_str()) == 0 && access(log_file.c_str(), R_OK) == 0) {
+        if (ensure_path_mounted(log_file) == 0 && access(log_file.c_str(), R_OK) == 0) {
           entries.push_back(std::move(log_file));
         }
       };
@@ -656,6 +666,48 @@ static void run_graphics_test() {
   ui->ShowText(true);
 }
 
+static int is_ufs_dev()
+{
+    char bootdevice[PROPERTY_VALUE_MAX] = {0};
+    property_get("ro.boot.bootdevice", bootdevice, "N/A");
+    ui->Print("ro.boot.bootdevice is: %s\n",bootdevice);
+    if (strlen(bootdevice) < strlen(".ufshc") + 1)
+        return 0;
+    return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
+                            ".ufshc",
+                            sizeof(".ufshc")));
+}
+
+static int do_sdcard_mount_for_ufs()
+{
+    int rc = 0;
+    ui->Print("Update via sdcard on UFS dev.Mounting card\n");
+    Volume *v = volume_for_mount_point("/sdcard");
+    if (v == nullptr) {
+            ui->Print("Unknown volume for /sdcard.Check fstab\n");
+            goto error;
+    }
+    if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
+            ui->Print("Unsupported format on the sdcard: %s\n",
+                            v->fs_type.c_str());
+            goto error;
+    }
+    rc = mount(UFS_DEV_SDCARD_BLK_PATH,
+                    v->mount_point.c_str(),
+                    v->fs_type.c_str(),
+                    v->flags,
+                    v->fs_options.c_str());
+    if (rc) {
+            ui->Print("Failed to mount sdcard : %s\n",
+                            strerror(errno));
+            goto error;
+    }
+    ui->Print("Done mounting sdcard\n");
+    return 0;
+error:
+    return -1;
+}
+
 // How long (in seconds) we wait for the fuse-provided package file to
 // appear, before timing out.
 #define SDCARD_INSTALL_TIMEOUT 10
@@ -663,9 +715,16 @@ static void run_graphics_test() {
 static int apply_from_sdcard(Device* device, bool* wipe_cache) {
     modified_flash = true;
 
-    if (ensure_path_mounted(SDCARD_ROOT) != 0) {
-        ui->Print("\n-- Couldn't mount %s.\n", SDCARD_ROOT);
-        return INSTALL_ERROR;
+    if (is_ufs_dev()) {
+            if (do_sdcard_mount_for_ufs() != 0) {
+                    ui->Print("\nFailed to mount sdcard\n");
+                    return INSTALL_ERROR;
+            }
+    } else  {
+             if (ensure_path_mounted(SDCARD_ROOT) != 0) {
+                 ui->Print("\n-- Couldn't mount %s.\n", SDCARD_ROOT);
+              return INSTALL_ERROR;
+             }
     }
 
     std::string path = browse_directory(SDCARD_ROOT, device);
@@ -837,14 +896,8 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
       }
       case Device::MOUNT_SYSTEM:
         // the system partition is mounted at /mnt/system
-        if (volume_for_mount_point(SYSTEM_ROOT) == nullptr) {
-          if (ensure_path_mounted_at("/", "/mnt/system") != -1) {
-            ui->Print("Mounted /system.\n");
-          }
-        } else {
-          if (ensure_path_mounted_at(SYSTEM_ROOT, "/mnt/system") != -1) {
-            ui->Print("Mounted /system.\n");
-          }
+        if (ensure_path_mounted_at(get_system_root(), "/mnt/system") != -1) {
+          ui->Print("Mounted /system.\n");
         }
         break;
 
@@ -1028,6 +1081,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   std::string locale;
 
   auto args_to_parse = StringVectorToNullTerminatedArray(args);
+  int status = INSTALL_SUCCESS;
 
   if (has_cache && ensure_path_mounted(CACHE_ROOT) == 0) {
   //Create /cache/recovery specifically if it is not created
@@ -1121,8 +1175,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   printf("\n");
 
   ui->Print("Supported API: %d\n", kRecoveryApiVersion);
-
-  int status = INSTALL_SUCCESS;
 
   if (update_package != nullptr) {
     // It's not entirely true that we will modify the flash. But we want
@@ -1240,6 +1292,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     ui->SetBackground(RecoveryUI::NO_COMMAND);
   }
 
+//error:
+//  if (is_ro_debuggable()) ui->ShowText(true);
   if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
     ui->SetBackground(RecoveryUI::ERROR);
     if (!ui->IsTextVisible()) {
