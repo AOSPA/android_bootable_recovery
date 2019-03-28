@@ -86,7 +86,7 @@ int apply_from_adb(bool* wipe_cache) {
         break;
       }
     }
-    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0);
+    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, true, 0);
     break;
   }
 
