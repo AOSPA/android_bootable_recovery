@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "fuse_sdcard_install.h"
+#include "install/fuse_sdcard_install.h"
 
 #include <dirent.h>
 #include <signal.h>
@@ -36,8 +36,8 @@
 #include "bootloader_message/bootloader_message.h"
 #include "fuse_provider.h"
 #include "fuse_sideload.h"
-#include "install.h"
-#include "roots.h"
+#include "install/install.h"
+#include "otautil/roots.h"
 
 #define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
 
@@ -233,7 +233,7 @@ int ApplyFromSdcard(Device* device, bool* wipe_cache, RecoveryUI* ui) {
       }
     }
 
-    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0 /*retry_count*/);
+    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0 /*retry_count*/, ui);
     break;
   }
 
