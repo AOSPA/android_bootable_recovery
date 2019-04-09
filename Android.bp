@@ -26,77 +26,6 @@ cc_defaults {
     ],
 }
 
-cc_library {
-    name: "librecovery_ui",
-    recovery_available: true,
-
-    defaults: [
-        "recovery_defaults",
-    ],
-
-    srcs: [
-        "device.cpp",
-        "screen_ui.cpp",
-        "ui.cpp",
-        "vr_ui.cpp",
-        "wear_ui.cpp"
-    ],
-
-    static_libs: [
-        "libminui",
-        "libotautil",
-        "libfstab",
-    ],
-
-    shared_libs: [
-        "libbase",
-        "libpng",
-        "libz",
-    ],
-}
-
-// Generic device that uses ScreenRecoveryUI.
-cc_library_static {
-    name: "librecovery_ui_default",
-    recovery_available: true,
-
-    defaults: [
-        "recovery_defaults",
-    ],
-
-    srcs: [
-        "default_device.cpp",
-    ],
-}
-
-// The default wear device that uses WearRecoveryUI.
-cc_library_static {
-    name: "librecovery_ui_wear",
-    recovery_available: true,
-
-    defaults: [
-        "recovery_defaults",
-    ],
-
-    srcs: [
-        "wear_device.cpp",
-    ],
-}
-
-// The default VR device that uses VrRecoveryUI.
-cc_library_static {
-    name: "librecovery_ui_vr",
-    recovery_available: true,
-
-    defaults: [
-        "recovery_defaults",
-    ],
-
-    srcs: [
-        "vr_device.cpp",
-    ],
-}
-
 cc_library_static {
     name: "librecovery_fastboot",
     recovery_available: true,
@@ -113,6 +42,7 @@ cc_library_static {
         "libbootloader_message",
         "libcutils",
         "liblog",
+        "librecovery_ui",
     ],
 
     static_libs: [
@@ -151,6 +81,7 @@ cc_defaults {
     static_libs: [
         "librecovery_fastboot",
         "libminui",
+        "libpackage",
         "libverifier",
         "libotautil",
 
@@ -173,10 +104,14 @@ cc_library_static {
     srcs: [
         "adb_install.cpp",
         "fsck_unshare_blocks.cpp",
-        "fuse_sdcard_provider.cpp",
+        "fuse_sdcard_install.cpp",
         "install.cpp",
         "recovery.cpp",
         "roots.cpp",
+    ],
+
+    shared_libs: [
+        "librecovery_ui",
     ],
 
     include_dirs: [
@@ -201,6 +136,29 @@ cc_library_static {
         "libbase",
         "libcrypto",
         "libcrypto_utils",
+        "libziparchive",
+    ],
+
+    static_libs: [
+        "libotautil",
+    ],
+}
+
+cc_library_static {
+    name: "libpackage",
+    recovery_available: true,
+
+    defaults: [
+        "recovery_defaults",
+    ],
+
+    srcs: [
+        "package.cpp",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "libcrypto",
         "libziparchive",
     ],
 

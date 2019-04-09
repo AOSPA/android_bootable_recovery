@@ -32,10 +32,9 @@
 #include "common.h"
 #include "fuse_sideload.h"
 #include "install.h"
-#include "ui.h"
+#include "recovery_ui/ui.h"
 
 int apply_from_adb(bool* wipe_cache) {
-  modified_flash = true;
   // Save the usb state to restore after the sideload operation.
   std::string usb_state = android::base::GetProperty("sys.usb.state", "none");
   // Clean up state and stop adbd.
@@ -86,7 +85,7 @@ int apply_from_adb(bool* wipe_cache) {
         break;
       }
     }
-    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0);
+    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, true, 0);
     break;
   }
 

@@ -17,7 +17,6 @@
 #include "recovery.h"
 
 #include <ctype.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -31,7 +30,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <sys/mount.h>
 #include <fs_mgr.h>
 #include <time.h>
@@ -57,19 +55,18 @@
 
 #include "adb_install.h"
 #include "common.h"
-#include "device.h"
 #include "fsck_unshare_blocks.h"
-#include "fuse_sdcard_provider.h"
-#include "fuse_sideload.h"
+#include "fuse_sdcard_install.h"
 #include "install.h"
 #include "logging.h"
 #include "otautil/dirutil.h"
 #include "otautil/error_code.h"
 #include "otautil/paths.h"
 #include "otautil/sysutil.h"
+#include "package.h"
+#include "recovery_ui/screen_ui.h"
+#include "recovery_ui/ui.h"
 #include "roots.h"
-#include "screen_ui.h"
-#include "ui.h"
 
 static constexpr const char* CACHE_LOG_DIR = "/cache/recovery";
 static constexpr const char* COMMAND_FILE = "/cache/recovery/command";
@@ -82,7 +79,6 @@ static constexpr const char* LOCALE_FILE = "/cache/recovery/last_locale";
 static constexpr const char* CACHE_ROOT = "/cache";
 static constexpr const char* DATA_ROOT = "/data";
 static constexpr const char* METADATA_ROOT = "/metadata";
-static constexpr const char* SDCARD_ROOT = "/sdcard";
 
 // We define RECOVERY_API_VERSION in Android.mk, which will be picked up by build system and packed
 // into target_files.zip. Assert the version defined in code and in Android.mk are consistent.
@@ -140,16 +136,6 @@ const char* reason = nullptr;
 
 bool is_ro_debuggable() {
     return android::base::GetBoolProperty("ro.debuggable", false);
-}
-
-// Set the BCB to reboot back into recovery (it won't resume the install from
-// sdcard though).
-static void set_sdcard_update_bootloader_message() {
-  std::vector<std::string> options;
-  std::string err;
-  if (!update_bootloader_message(options, &err)) {
-    LOG(ERROR) << "Failed to set BCB message: " << err;
-  }
 }
 
 // Clear the recovery command and prepare to boot a (hopefully working) system,
@@ -297,72 +283,6 @@ bool SetUsbConfig(const std::string& state) {
   return android::base::WaitForProperty("sys.usb.state", state);
 }
 
-// Returns the selected filename, or an empty string.
-static std::string browse_directory(const std::string& path, Device* device) {
-  ensure_path_mounted(path);
-
-  std::unique_ptr<DIR, decltype(&closedir)> d(opendir(path.c_str()), closedir);
-  if (!d) {
-    PLOG(ERROR) << "error opening " << path;
-    return "";
-  }
-
-  std::vector<std::string> dirs;
-  std::vector<std::string> entries{ "../" };  // "../" is always the first entry.
-
-  dirent* de;
-  while ((de = readdir(d.get())) != nullptr) {
-    std::string name(de->d_name);
-
-    if (de->d_type == DT_DIR) {
-      // Skip "." and ".." entries.
-      if (name == "." || name == "..") continue;
-      dirs.push_back(name + "/");
-    } else if (de->d_type == DT_REG && android::base::EndsWithIgnoreCase(name, ".zip")) {
-      entries.push_back(name);
-    }
-  }
-
-  std::sort(dirs.begin(), dirs.end());
-  std::sort(entries.begin(), entries.end());
-
-  // Append dirs to the entries list.
-  entries.insert(entries.end(), dirs.begin(), dirs.end());
-
-  std::vector<std::string> headers{ "Choose a package to install:", path };
-
-  size_t chosen_item = 0;
-  while (true) {
-    chosen_item = ui->ShowMenu(
-        headers, entries, chosen_item, true,
-        std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
-
-    // Return if WaitKey() was interrupted.
-    if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
-      return "";
-    }
-
-    const std::string& item = entries[chosen_item];
-    if (chosen_item == 0) {
-      // Go up but continue browsing (if the caller is browse_directory).
-      return "";
-    }
-
-    std::string new_path = path + "/" + item;
-    if (new_path.back() == '/') {
-      // Recurse down into a subdirectory.
-      new_path.pop_back();
-      std::string result = browse_directory(new_path, device);
-      if (!result.empty()) return result;
-    } else {
-      // Selected a zip file: return the path to the caller.
-      return new_path;
-    }
-  }
-
-  // Unreachable.
-}
-
 static bool yes_no(Device* device, const char* question1, const char* question2) {
   std::vector<std::string> headers{ question1, question2 };
   std::vector<std::string> items{ " No", " Yes" };
@@ -502,45 +422,93 @@ static bool secure_wipe_partition(const std::string& partition) {
   return true;
 }
 
-// Check if the wipe package matches expectation:
+static std::unique_ptr<Package> ReadWipePackage(size_t wipe_package_size) {
+  if (wipe_package_size == 0) {
+    LOG(ERROR) << "wipe_package_size is zero";
+    return nullptr;
+  }
+
+  std::string wipe_package;
+  std::string err_str;
+  if (!read_wipe_package(&wipe_package, wipe_package_size, &err_str)) {
+    PLOG(ERROR) << "Failed to read wipe package" << err_str;
+    return nullptr;
+  }
+
+  return Package::CreateMemoryPackage(
+      std::vector<uint8_t>(wipe_package.begin(), wipe_package.end()), nullptr);
+}
+
+// Checks if the wipe package matches expectation. If the check passes, reads the list of
+// partitions to wipe from the package. Checks include
 // 1. verify the package.
 // 2. check metadata (ota-type, pre-device and serial number if having one).
-static bool check_wipe_package(size_t wipe_package_size) {
-    if (wipe_package_size == 0) {
-        LOG(ERROR) << "wipe_package_size is zero";
-        return false;
-    }
-    std::string wipe_package;
-    std::string err_str;
-    if (!read_wipe_package(&wipe_package, wipe_package_size, &err_str)) {
-        PLOG(ERROR) << "Failed to read wipe package";
-        return false;
-    }
-    if (!verify_package(reinterpret_cast<const unsigned char*>(wipe_package.data()),
-                        wipe_package.size())) {
-        LOG(ERROR) << "Failed to verify package";
-        return false;
-    }
+static bool CheckWipePackage(Package* wipe_package) {
+  if (!verify_package(wipe_package)) {
+    LOG(ERROR) << "Failed to verify package";
+    return false;
+  }
 
-    // Extract metadata
-    ZipArchiveHandle zip;
-    int err = OpenArchiveFromMemory(static_cast<void*>(&wipe_package[0]), wipe_package.size(),
-                                    "wipe_package", &zip);
-    if (err != 0) {
-        LOG(ERROR) << "Can't open wipe package : " << ErrorCodeString(err);
-        return false;
+  ZipArchiveHandle zip = wipe_package->GetZipArchiveHandle();
+  if (!zip) {
+    LOG(ERROR) << "Failed to get ZipArchiveHandle";
+    return false;
+  }
+
+  std::map<std::string, std::string> metadata;
+  if (!ReadMetadataFromPackage(zip, &metadata)) {
+    LOG(ERROR) << "Failed to parse metadata in the zip file";
+    return false;
+  }
+
+  return CheckPackageMetadata(metadata, OtaType::BRICK) == 0;
+}
+
+std::vector<std::string> GetWipePartitionList(Package* wipe_package) {
+  ZipArchiveHandle zip = wipe_package->GetZipArchiveHandle();
+  if (!zip) {
+    LOG(ERROR) << "Failed to get ZipArchiveHandle";
+    return {};
+  }
+
+  static constexpr const char* RECOVERY_WIPE_ENTRY_NAME = "recovery.wipe";
+
+  std::string partition_list_content;
+  ZipString path(RECOVERY_WIPE_ENTRY_NAME);
+  ZipEntry entry;
+  if (FindEntry(zip, path, &entry) == 0) {
+    uint32_t length = entry.uncompressed_length;
+    partition_list_content = std::string(length, '\0');
+    if (auto err = ExtractToMemory(
+            zip, &entry, reinterpret_cast<uint8_t*>(partition_list_content.data()), length);
+        err != 0) {
+      LOG(ERROR) << "Failed to extract " << RECOVERY_WIPE_ENTRY_NAME << ": "
+                 << ErrorCodeString(err);
+      return {};
     }
+  } else {
+    LOG(INFO) << "Failed to find " << RECOVERY_WIPE_ENTRY_NAME
+              << ", falling back to use the partition list on device.";
 
-    std::map<std::string, std::string> metadata;
-    if (!ReadMetadataFromPackage(zip, &metadata)) {
-      LOG(ERROR) << "Failed to parse metadata in the zip file";
-      return false;
+    static constexpr const char* RECOVERY_WIPE_ON_DEVICE = "/etc/recovery.wipe";
+    if (!android::base::ReadFileToString(RECOVERY_WIPE_ON_DEVICE, &partition_list_content)) {
+      PLOG(ERROR) << "failed to read \"" << RECOVERY_WIPE_ON_DEVICE << "\"";
+      return {};
     }
+  }
 
-    int result = CheckPackageMetadata(metadata, OtaType::BRICK);
-    CloseArchive(zip);
+  std::vector<std::string> result;
+  std::vector<std::string> lines = android::base::Split(partition_list_content, "\n");
+  for (const std::string& line : lines) {
+    std::string partition = android::base::Trim(line);
+    // Ignore '#' comment or empty lines.
+    if (android::base::StartsWith(partition, "#") || partition.empty()) {
+      continue;
+    }
+    result.push_back(line);
+  }
 
-    return result == 0;
+  return result;
 }
 
 // Wipes the current A/B device, with a secure wipe of all the partitions in RECOVERY_WIPE.
@@ -548,25 +516,24 @@ static bool wipe_ab_device(size_t wipe_package_size) {
   ui->SetBackground(RecoveryUI::ERASING);
   ui->SetProgressType(RecoveryUI::INDETERMINATE);
 
-  if (!check_wipe_package(wipe_package_size)) {
+  auto wipe_package = ReadWipePackage(wipe_package_size);
+  if (!wipe_package) {
+    LOG(ERROR) << "Failed to open wipe package";
+    return false;
+  }
+
+  if (!CheckWipePackage(wipe_package.get())) {
     LOG(ERROR) << "Failed to verify wipe package";
     return false;
   }
-  static constexpr const char* RECOVERY_WIPE = "/etc/recovery.wipe";
-  std::string partition_list;
-  if (!android::base::ReadFileToString(RECOVERY_WIPE, &partition_list)) {
-    LOG(ERROR) << "failed to read \"" << RECOVERY_WIPE << "\"";
+
+  auto partition_list = GetWipePartitionList(wipe_package.get());
+  if (partition_list.empty()) {
+    LOG(ERROR) << "Empty wipe ab partition list";
     return false;
   }
 
-  std::vector<std::string> lines = android::base::Split(partition_list, "\n");
-  for (const std::string& line : lines) {
-    std::string partition = android::base::Trim(line);
-    // Ignore '#' comment or empty lines.
-    if (android::base::StartsWith(partition, "#") || partition.empty()) {
-      continue;
-    }
-
+  for (const auto& partition : partition_list) {
     // Proceed anyway even if it fails to wipe some partition.
     secure_wipe_partition(partition);
   }
@@ -708,91 +675,6 @@ error:
     return -1;
 }
 
-// How long (in seconds) we wait for the fuse-provided package file to
-// appear, before timing out.
-#define SDCARD_INSTALL_TIMEOUT 10
-
-static int apply_from_sdcard(Device* device, bool* wipe_cache) {
-    modified_flash = true;
-
-    if (is_ufs_dev()) {
-            if (do_sdcard_mount_for_ufs() != 0) {
-                    ui->Print("\nFailed to mount sdcard\n");
-                    return INSTALL_ERROR;
-            }
-    } else  {
-             if (ensure_path_mounted(SDCARD_ROOT) != 0) {
-                 ui->Print("\n-- Couldn't mount %s.\n", SDCARD_ROOT);
-              return INSTALL_ERROR;
-             }
-    }
-
-    std::string path = browse_directory(SDCARD_ROOT, device);
-    if (path.empty()) {
-        ui->Print("\n-- No package file selected.\n");
-        ensure_path_unmounted(SDCARD_ROOT);
-        return INSTALL_ERROR;
-    }
-
-    ui->Print("\n-- Install %s ...\n", path.c_str());
-    set_sdcard_update_bootloader_message();
-
-    // We used to use fuse in a thread as opposed to a process. Since accessing
-    // through fuse involves going from kernel to userspace to kernel, it leads
-    // to deadlock when a page fault occurs. (Bug: 26313124)
-    pid_t child;
-    if ((child = fork()) == 0) {
-        bool status = start_sdcard_fuse(path.c_str());
-
-        _exit(status ? EXIT_SUCCESS : EXIT_FAILURE);
-    }
-
-    // FUSE_SIDELOAD_HOST_PATHNAME will start to exist once the fuse in child
-    // process is ready.
-    int result = INSTALL_ERROR;
-    int status;
-    bool waited = false;
-    for (int i = 0; i < SDCARD_INSTALL_TIMEOUT; ++i) {
-        if (waitpid(child, &status, WNOHANG) == -1) {
-            result = INSTALL_ERROR;
-            waited = true;
-            break;
-        }
-
-        struct stat sb;
-        if (stat(FUSE_SIDELOAD_HOST_PATHNAME, &sb) == -1) {
-            if (errno == ENOENT && i < SDCARD_INSTALL_TIMEOUT-1) {
-                sleep(1);
-                continue;
-            } else {
-                LOG(ERROR) << "Timed out waiting for the fuse-provided package.";
-                result = INSTALL_ERROR;
-                kill(child, SIGKILL);
-                break;
-            }
-        }
-
-        result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0 /*retry_count*/);
-        break;
-    }
-
-    if (!waited) {
-        // Calling stat() on this magic filename signals the fuse
-        // filesystem to shut down.
-        struct stat sb;
-        stat(FUSE_SIDELOAD_HOST_EXIT_PATHNAME, &sb);
-
-        waitpid(child, &status, 0);
-    }
-
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        LOG(ERROR) << "Error exit from the fuse process: " << WEXITSTATUS(status);
-    }
-
-    ensure_path_unmounted(SDCARD_ROOT);
-    return result;
-}
-
 // Returns REBOOT, SHUTDOWN, or REBOOT_BOOTLOADER. Returning NO_ACTION means to take the default,
 // which is to reboot or shutdown depending on if the --shutdown_after flag was passed to recovery.
 static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
@@ -854,32 +736,32 @@ static Device::BuiltinAction prompt_and_wait(Device* device, int status) {
         break;
 
       case Device::APPLY_ADB_SIDELOAD:
-      case Device::APPLY_SDCARD:
-        {
-          bool adb = (chosen_action == Device::APPLY_ADB_SIDELOAD);
-          if (adb) {
-            status = apply_from_adb(&should_wipe_cache);
-          } else {
-            status = apply_from_sdcard(device, &should_wipe_cache);
-          }
+      case Device::APPLY_SDCARD: {
+        modified_flash = true;
+        bool adb = (chosen_action == Device::APPLY_ADB_SIDELOAD);
+        if (adb) {
+          status = apply_from_adb(&should_wipe_cache);
+        } else {
+          status = ApplyFromSdcard(device, &should_wipe_cache, ui);
+        }
 
-          if (status == INSTALL_SUCCESS && should_wipe_cache) {
-            if (!wipe_cache(false, device)) {
-              status = INSTALL_ERROR;
-            }
-          }
-
-          if (status != INSTALL_SUCCESS) {
-            ui->SetBackground(RecoveryUI::ERROR);
-            ui->Print("Installation aborted.\n");
-            copy_logs(modified_flash, has_cache);
-          } else if (!ui->IsTextVisible()) {
-            return Device::NO_ACTION;  // reboot if logs aren't visible
-          } else {
-            ui->Print("\nInstall from %s complete.\n", adb ? "ADB" : "SD card");
+        if (status == INSTALL_SUCCESS && should_wipe_cache) {
+          if (!wipe_cache(false, device)) {
+            status = INSTALL_ERROR;
           }
         }
+
+        if (status != INSTALL_SUCCESS) {
+          ui->SetBackground(RecoveryUI::ERROR);
+          ui->Print("Installation aborted.\n");
+          copy_logs(modified_flash, has_cache);
+        } else if (!ui->IsTextVisible()) {
+          return Device::NO_ACTION;  // reboot if logs aren't visible
+        } else {
+          ui->Print("\nInstall from %s complete.\n", adb ? "ADB" : "SD card");
+        }
         break;
+      }
 
       case Device::VIEW_RECOVERY_LOGS:
         choose_recovery_file(device);
@@ -1171,6 +1053,23 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   }
   printf("\n\n");
 
+   if (update_package) {
+        if (!strncmp("/sdcard", update_package, 7)) {
+            //If this is a UFS device lets mount the sdcard ourselves.Depending
+            //on if the device is UFS or EMMC based the path to the sdcard
+            //device changes so we cannot rely on the block dev path from
+            //recovery.fstab file
+            if (is_ufs_dev()) {
+                if(do_sdcard_mount_for_ufs() != 0) {
+                    status = INSTALL_ERROR;
+                    goto error;
+                }
+            } else {
+                ui->Print("Update via sdcard on EMMC dev. Using path from fstab\n");
+            }
+        }
+    }
+
   property_list(print_property, nullptr);
   printf("\n");
 
@@ -1292,8 +1191,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     ui->SetBackground(RecoveryUI::NO_COMMAND);
   }
 
-//error:
-//  if (is_ro_debuggable()) ui->ShowText(true);
+error:
   if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
     ui->SetBackground(RecoveryUI::ERROR);
     if (!ui->IsTextVisible()) {

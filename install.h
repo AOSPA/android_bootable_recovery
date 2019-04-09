@@ -21,8 +21,11 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include <ziparchive/zip_archive.h>
+
+#include "package.h"
 
 enum InstallResult {
   INSTALL_SUCCESS,
@@ -45,13 +48,16 @@ enum class OtaType {
 int install_package(const std::string& package, bool* wipe_cache, bool needs_mount,
                     int retry_count);
 
-// Verify the package by ota keys. Return true if the package is verified successfully,
-// otherwise return false.
-bool verify_package(const unsigned char* package_data, size_t package_size);
+// Verifies the package by ota keys. Returns true if the package is verified successfully,
+// otherwise returns false.
+bool verify_package(Package* package);
 
 // Reads meta data file of the package; parses each line in the format "key=value"; and writes the
 // result to |metadata|. Return true if succeed, otherwise return false.
 bool ReadMetadataFromPackage(ZipArchiveHandle zip, std::map<std::string, std::string>* metadata);
+
+// Reads the "recovery.wipe" entry in the zip archive returns a list of partitions to wipe.
+std::vector<std::string> GetWipePartitionList(Package* wipe_package);
 
 // Verifies the compatibility info in a Treble-compatible package. Returns true directly if the
 // entry doesn't exist.
