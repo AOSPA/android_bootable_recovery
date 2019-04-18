@@ -175,7 +175,7 @@ error:
   return -1;
 }
 
-int ApplyFromSdcard(Device* device, bool* wipe_cache, RecoveryUI* ui) {
+int ApplyFromSdcard(Device* device, RecoveryUI* ui) {
   if (is_ufs_dev()) {
     if (do_sdcard_mount_for_ufs() != 0) {
       LOG(ERROR) << "\nFailed to mount sdcard\n";
@@ -233,7 +233,7 @@ int ApplyFromSdcard(Device* device, bool* wipe_cache, RecoveryUI* ui) {
       }
     }
 
-    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, wipe_cache, false, 0 /*retry_count*/, ui);
+    result = install_package(FUSE_SIDELOAD_HOST_PATHNAME, false, false, 0 /*retry_count*/, ui);
     break;
   }
 
