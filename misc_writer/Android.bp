@@ -15,8 +15,12 @@
 //
 
 cc_binary {
+<<<<<<< HEAD
     name: "misc_writer",
     vendor: true,
+=======
+    name: "misc_writer_system",
+>>>>>>> 6352b221... Add misc_writer.
 
     srcs: [
         "misc_writer.cpp",
@@ -34,7 +38,12 @@ cc_binary {
     ],
 
     static_libs: [
+<<<<<<< HEAD
         "libbootloader_message_vendor",
         "libfstab",
+=======
+        "libbootloader_message",
+        "libfs_mgr",
+>>>>>>> 6352b221... Add misc_writer.
     ],
 }

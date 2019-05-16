@@ -27,11 +27,19 @@
 
 #include <android-base/logging.h>
 #include <android-base/parseint.h>
+<<<<<<< HEAD
+=======
+#include <android-base/strings.h>
+>>>>>>> 6352b221... Add misc_writer.
 #include <bootloader_message/bootloader_message.h>
 
 using namespace std::string_literals;
 
+<<<<<<< HEAD
 static std::vector<uint8_t> ParseHexString(std::string_view hex_string) {
+=======
+static std::vector<uint8_t> ParseHexString(std::string hex_string) {
+>>>>>>> 6352b221... Add misc_writer.
   auto length = hex_string.size();
   if (length % 2 != 0 || length == 0) {
     return {};
@@ -65,7 +73,11 @@ int main(int argc, char** argv) {
 
   // Offset defaults to 0 if unspecified.
   size_t offset = 0;
+<<<<<<< HEAD
   std::string_view hex_string;
+=======
+  std::string hex_string;
+>>>>>>> 6352b221... Add misc_writer.
 
   int arg;
   int option_index;
@@ -85,7 +97,11 @@ int main(int argc, char** argv) {
     }
   }
 
+<<<<<<< HEAD
   if (hex_string.starts_with("0x") || hex_string.starts_with("0X")) {
+=======
+  if (android::base::StartsWith(hex_string, "0x") || android::base::StartsWith(hex_string, "0X")) {
+>>>>>>> 6352b221... Add misc_writer.
     hex_string = hex_string.substr(2);
   }
   if (hex_string.empty()) {

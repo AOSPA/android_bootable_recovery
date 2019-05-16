@@ -45,3 +45,10 @@ cc_library_static {
     ],
     vendor: true,
 }
+
+cc_library_static {
+    name: "libbootloader_message",
+    defaults: [
+        "libbootloader_message_defaults",
+    ],
+}
