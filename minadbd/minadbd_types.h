@@ -30,11 +30,12 @@ enum MinadbdErrorCode : int {
   kMinadbdSocketIOError = 2,
   kMinadbdMessageFormatError = 3,
   kMinadbdAdbVersionError = 4,
-  kMinadbdPackageSizeError = 5,
+  kMinadbdHostCommandArgumentError = 5,
   kMinadbdFuseStartError = 6,
   kMinadbdUnsupportedCommandError = 7,
   kMinadbdCommandExecutionError = 8,
   kMinadbdErrorUnknown = 9,
+  kMinadbdHostSocketIOError = 10,
 };
 
 enum class MinadbdCommandStatus : uint32_t {
@@ -42,12 +43,21 @@ enum class MinadbdCommandStatus : uint32_t {
   kFailure = 1,
 };
 
-enum class MinadbdCommands : uint32_t {
+enum class MinadbdCommand : uint32_t {
   kInstall = 0,
   kUiPrint = 1,
-  kError = 2,
+  kRebootAndroid = 2,
+  kRebootBootloader = 3,
+  kRebootFastboot = 4,
+  kRebootRecovery = 5,
+  kRebootRescue = 6,
+  kWipeCache = 7,
+  kWipeData = 8,
+
+  // Last but invalid command.
+  kError,
 };
 
-static_assert(kMinadbdMessageSize == sizeof(kMinadbdCommandPrefix) - 1 + sizeof(MinadbdCommands));
+static_assert(kMinadbdMessageSize == sizeof(kMinadbdCommandPrefix) - 1 + sizeof(MinadbdCommand));
 static_assert(kMinadbdMessageSize ==
               sizeof(kMinadbdStatusPrefix) - 1 + sizeof(MinadbdCommandStatus));
