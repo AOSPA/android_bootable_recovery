@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
-#ifndef MINADBD_H__
-#define MINADBD_H__
+#pragma once
 
-int minadbd_main();
+#include <string>
 
-#endif
+void SetMinadbdSocketFd(int socket_fd);
+
+void SetMinadbdRescueMode(bool);
+
+void SetSideloadMountPoint(const std::string& path);
