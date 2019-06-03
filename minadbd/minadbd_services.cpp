@@ -161,7 +161,7 @@ static void RescueInstallHostService(unique_fd sfd, const std::string& args) {
 // If given an empty string, dumps all the supported properties (analogous to `adb shell getprop`)
 // in lines, e.g. "[prop]: [value]".
 static void RescueGetpropHostService(unique_fd sfd, const std::string& prop) {
-  static const std::set<std::string> kGetpropAllowedProps = {
+  static const std::unordered_set<std::string> kGetpropAllowedProps = {
     "ro.build.date.utc",
     "ro.build.fingerprint",
     "ro.build.flavor",
