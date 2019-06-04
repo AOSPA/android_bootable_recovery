@@ -156,12 +156,11 @@ static void RescueInstallHostService(unique_fd sfd, const std::string& args) {
   }
 }
 
-// Answers the query on a given property |prop|, by writing the result to the given |sfd|. The
-// result will be newline-terminated, so nonexistent or nonallowed query will be answered with "\n".
-// If given an empty string, dumps all the supported properties (analogous to `adb shell getprop`)
-// in lines, e.g. "[prop]: [value]".
+// Answers the query on a given property. The result will be written to the given sfd. If given an
+// empty string, dumps all the supported properties (similar to `adb shell getprop`) in lines, e.g.
+// "[prop]: [value]".
 static void RescueGetpropHostService(unique_fd sfd, const std::string& prop) {
-  static const std::unordered_set<std::string> kGetpropAllowedProps = {
+  static const std::set<std::string> kGetpropAllowedProps = {
     "ro.build.date.utc",
     "ro.build.fingerprint",
     "ro.build.flavor",
@@ -172,6 +171,10 @@ static void RescueGetpropHostService(unique_fd sfd, const std::string& prop) {
     "ro.product.device",
     "ro.product.vendor.device",
   };
+  if (!prop.empty() && kGetpropAllowedProps.find(prop) == kGetpropAllowedProps.end()) {
+    return;
+  }
+
   std::string result;
   if (prop.empty()) {
     for (const auto& key : kGetpropAllowedProps) {
@@ -181,8 +184,8 @@ static void RescueGetpropHostService(unique_fd sfd, const std::string& prop) {
       }
       result += "[" + key + "]: [" + value + "]\n";
     }
-  } else if (kGetpropAllowedProps.find(prop) != kGetpropAllowedProps.end()) {
-    result = android::base::GetProperty(prop, "") + "\n";
+  } else {
+    result = android::base::GetProperty(prop, "");
   }
   if (result.empty()) {
     result = "\n";
