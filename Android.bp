@@ -76,7 +76,6 @@ cc_defaults {
 
         // external dependencies
         "libhealthhalutils",
-        "libfstab",
     ],
 }
 
@@ -150,7 +149,6 @@ cc_binary {
 
     static_libs: [
         "libotautil",
-        "libfstab",
     ],
 
     init_rc: [
@@ -177,7 +175,6 @@ cc_binary {
 
     static_libs: [
         "libotautil",
-        "libfstab",
     ],
 
     init_rc: [
