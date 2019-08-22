@@ -41,8 +41,8 @@
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 #include <bootloader_message/bootloader_message.h>
-#include <cutils/android_reboot.h>
 #include <cutils/sockets.h>
+#include <fs_mgr/roots.h>
 #include <private/android_logger.h> /* private pmsg functions */
 #include <selinux/android.h>
 #include <selinux/label.h>
@@ -375,7 +375,6 @@ int main(int argc, char** argv) {
     }
 
     if (locale.empty()) {
-      static constexpr const char* DEFAULT_LOCALE = "en-US";
       locale = DEFAULT_LOCALE;
     }
   }
@@ -472,27 +471,26 @@ int main(int argc, char** argv) {
     switch (ret) {
       case Device::SHUTDOWN:
         ui->Print("Shutting down...\n");
-        // TODO: Move all the reboots to reboot(), which should conditionally set quiescent flag.
-        android::base::SetProperty(ANDROID_RB_PROPERTY, "shutdown,");
+        Shutdown();
         break;
 
       case Device::REBOOT_BOOTLOADER:
         ui->Print("Rebooting to bootloader...\n");
-        android::base::SetProperty(ANDROID_RB_PROPERTY, "reboot,bootloader");
+        Reboot("bootloader");
         break;
 
       case Device::REBOOT_FASTBOOT:
         ui->Print("Rebooting to recovery/fastboot...\n");
-        android::base::SetProperty(ANDROID_RB_PROPERTY, "reboot,fastboot");
+        Reboot("fastboot");
         break;
 
       case Device::REBOOT_RECOVERY:
         ui->Print("Rebooting to recovery...\n");
-        reboot("reboot,recovery");
+        Reboot("recovery");
         break;
 
       case Device::REBOOT_RESCUE: {
-        // Not using `reboot("reboot,rescue")`, as it requires matching support in kernel and/or
+        // Not using `Reboot("rescue")`, as it requires matching support in kernel and/or
         // bootloader.
         bootloader_message boot = {};
         strlcpy(boot.command, "boot-rescue", sizeof(boot.command));
@@ -503,14 +501,14 @@ int main(int argc, char** argv) {
           continue;
         }
         ui->Print("Rebooting to recovery/rescue...\n");
-        reboot("reboot,recovery");
+        Reboot("recovery");
         break;
       }
 
       case Device::ENTER_FASTBOOT:
-        if (logical_partitions_mapped()) {
+        if (android::fs_mgr::LogicalPartitionsMapped()) {
           ui->Print("Partitions may be mounted - rebooting to enter fastboot.");
-          android::base::SetProperty(ANDROID_RB_PROPERTY, "reboot,fastboot");
+          Reboot("fastboot");
         } else {
           LOG(INFO) << "Entering fastboot";
           fastboot = true;
@@ -524,7 +522,7 @@ int main(int argc, char** argv) {
 
       default:
         ui->Print("Rebooting...\n");
-        reboot("reboot,");
+        Reboot("");
         break;
     }
   }
