@@ -20,11 +20,14 @@
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 // Forward declaration to avoid including "ui.h".
 class RecoveryUI;
+
+class BootState;
 
 class Device {
  public:
@@ -58,6 +61,8 @@ class Device {
     REBOOT_FASTBOOT = 17,
     REBOOT_RECOVERY = 18,
     REBOOT_RESCUE = 19,
+    REBOOT_FROM_FASTBOOT = 20,
+    SHUTDOWN_FROM_FASTBOOT = 21,
   };
 
   explicit Device(RecoveryUI* ui);
@@ -124,9 +129,16 @@ class Device {
     return true;
   }
 
+  void SetBootState(const BootState* state);
+  // The getters for reason and stage may return std::nullopt until StartRecovery() is called. It's
+  // the caller's responsibility to perform the check and handle the exception.
+  std::optional<std::string> GetReason() const;
+  std::optional<std::string> GetStage() const;
+
  private:
   // The RecoveryUI object that should be used to display the user interface for this device.
   std::unique_ptr<RecoveryUI> ui_;
+  const BootState* boot_state_{ nullptr };
 };
 
 // Disable name mangling, as this function will be loaded via dlsym(3).
