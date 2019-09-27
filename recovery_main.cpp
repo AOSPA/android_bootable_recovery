@@ -84,6 +84,10 @@ static void UiLogger(android::base::LogId log_buffer_id, android::base::LogSever
   }
 }
 
+static std::string get_build_type() {
+  return android::base::GetProperty("ro.build.type", "");
+}
+
 // Parses the command line argument from various sources; and reads the stage field from BCB.
 // command line args come from, in decreasing precedence:
 //   - the actual command line
@@ -442,6 +446,11 @@ int main(int argc, char** argv) {
 
   if (!android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
     device->RemoveMenuItemForAction(Device::ENTER_FASTBOOT);
+  }
+
+  if (get_build_type() != "eng") {
+    device->RemoveMenuItemForAction(Device::RUN_GRAPHICS_TEST);
+    device->RemoveMenuItemForAction(Device::RUN_LOCALE_TEST);
   }
 
   if (!IsRoDebuggable()) {
