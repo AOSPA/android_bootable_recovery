@@ -64,7 +64,6 @@ libapplypatch_static_libs = [
     "libbase",
     "libbrotli",
     "libbz",
-    "libcrypto",
     "libz",
     "libziparchive",
 ]
@@ -91,8 +90,6 @@ librecovery_static_libs = [
     "libfs_mgr",
     "libhidl-gen-utils",
     "libhidlbase",
-    "libhidltransport",
-    "libhwbinder_noltopgo",
     "libbinderthreadstate",
     "liblp",
     "libvndksupport",
@@ -102,6 +99,7 @@ librecovery_static_libs = [
 cc_test {
     name: "recovery_unit_test",
     isolated: true,
+    require_root: true,
 
     defaults: [
         "recovery_test_defaults",
