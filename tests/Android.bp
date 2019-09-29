@@ -50,13 +50,11 @@ cc_defaults {
     },
 }
 
-// libapplypatch, libapplypatch_modes, libimgdiff, libimgpatch
+// libapplypatch, libapplypatch_modes
 libapplypatch_static_libs = [
     "libapplypatch_modes",
     "libapplypatch",
     "libedify",
-    "libimgdiff",
-    "libimgpatch",
     "libotautil",
     "libbsdiff",
     "libbspatch",
@@ -108,6 +106,7 @@ cc_test {
     defaults: [
         "recovery_test_defaults",
         "libupdater_defaults",
+        "libupdater_device_defaults",
     ],
 
     test_suites: ["device-tests"],
@@ -121,7 +120,8 @@ cc_test {
         "libfusesideload",
         "libminui",
         "libotautil",
-        "libupdater",
+        "libupdater_device",
+        "libupdater_core",
         "libupdate_verifier",
 
         "libgtest_prod",
@@ -155,26 +155,22 @@ cc_test_host {
 
     defaults: [
         "recovery_test_defaults",
+        "libupdater_defaults",
     ],
 
     srcs: [
-        "unit/imgdiff_test.cpp",
+        "unit/host/*",
     ],
 
     static_libs: [
+        "libupdater_host",
+        "libupdater_core",
         "libimgdiff",
-        "libimgpatch",
-        "libotautil",
         "libbsdiff",
-        "libbspatch",
-        "libziparchive",
-        "libutils",
-        "libcrypto",
-        "libbrotli",
-        "libbz",
         "libdivsufsort64",
         "libdivsufsort",
-        "libz",
+        "libfstab",
+        "libc++fs",
     ],
 
     test_suites: ["general-tests"],
@@ -183,7 +179,7 @@ cc_test_host {
 
     target: {
         darwin: {
-            // libimgdiff is not available on the Mac.
+            // libapplypatch in "libupdater_defaults" is not available on the Mac.
             enabled: false,
         },
     },

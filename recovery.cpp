@@ -49,14 +49,14 @@
 #include <ziparchive/zip_archive.h>
 
 #include "bootloader_message/bootloader_message.h"
-#include "common.h"
 #include "fsck_unshare_blocks.h"
 #include "install/adb_install.h"
-#include "install/fuse_sdcard_install.h"
+#include "install/fuse_install.h"
 #include "install/install.h"
 #include "install/package.h"
 #include "install/wipe_data.h"
 #include "install/wipe_device.h"
+#include "otautil/boot_state.h"
 #include "otautil/dirutil.h"
 #include "otautil/error_code.h"
 #include "otautil/logging.h"
@@ -76,13 +76,7 @@ static constexpr const char* LOCALE_FILE = "/cache/recovery/last_locale";
 
 static constexpr const char* CACHE_ROOT = "/cache";
 
-// We define RECOVERY_API_VERSION in Android.mk, which will be picked up by build system and packed
-// into target_files.zip. Assert the version defined in code and in Android.mk are consistent.
-static_assert(kRecoveryApiVersion == RECOVERY_API_VERSION, "Mismatching recovery API versions.");
-
 static bool save_current_log = false;
-std::string stage;
-const char* reason = nullptr;
 
 /*
  * The recovery tool communicates with the main system through /cache files.
@@ -91,6 +85,8 @@ const char* reason = nullptr;
  *
  * The arguments which may be supplied in the recovery.command file:
  *   --update_package=path - verify install an OTA package file
+ *   --install_with_fuse - install the update package with FUSE. This allows installation of large
+ *       packages on LP32 builds. Since the mmap will otherwise fail due to out of memory.
  *   --wipe_data - erase user data (and cache), then reboot
  *   --prompt_and_wipe_data - prompt the user that data is corrupt, with their consent erase user
  *       data (and cache), then reboot
@@ -111,7 +107,7 @@ const char* reason = nullptr;
  *    -- after this, rebooting will restart the erase --
  * 5. erase_volume() reformats /data
  * 6. erase_volume() reformats /cache
- * 7. finish_recovery() erases BCB
+ * 7. FinishRecovery() erases BCB
  *    -- after this, rebooting will restart the main system --
  * 8. main() calls reboot() to boot main system
  *
@@ -123,25 +119,25 @@ const char* reason = nullptr;
  *    -- after this, rebooting will attempt to reinstall the update --
  * 5. InstallPackage() attempts to install the update
  *    NOTE: the package install must itself be restartable from any point
- * 6. finish_recovery() erases BCB
+ * 6. FinishRecovery() erases BCB
  *    -- after this, rebooting will (try to) restart the main system --
  * 7. ** if install failed **
  *    7a. PromptAndWait() shows an error icon and waits for the user
  *    7b. the user reboots (pulling the battery, etc) into the main system
  */
 
-bool is_ro_debuggable() {
-    return android::base::GetBoolProperty("ro.debuggable", false);
+static bool IsRoDebuggable() {
+  return android::base::GetBoolProperty("ro.debuggable", false);
 }
 
 // Clear the recovery command and prepare to boot a (hopefully working) system,
 // copy our log file to cache as well (for the system to read). This function is
 // idempotent: call it as many times as you like.
-static void finish_recovery() {
+static void FinishRecovery(RecoveryUI* ui) {
   std::string locale = ui->GetLocale();
   // Save the locale to cache, so if recovery is next started up without a '--locale' argument
   // (e.g., directly from the bootloader) it will use the last-known locale.
-  if (!locale.empty() && has_cache) {
+  if (!locale.empty() && HasCache()) {
     LOG(INFO) << "Saving locale \"" << locale << "\"";
     if (ensure_path_mounted(LOCALE_FILE) != 0) {
       LOG(ERROR) << "Failed to mount " << LOCALE_FILE;
@@ -150,7 +146,7 @@ static void finish_recovery() {
     }
   }
 
-  copy_logs(save_current_log, has_cache, sehandle);
+  copy_logs(save_current_log);
 
   // Reset to normal system boot so recovery won't cycle indefinitely.
   std::string err;
@@ -159,7 +155,7 @@ static void finish_recovery() {
   }
 
   // Remove the command file, so recovery won't repeat indefinitely.
-  if (has_cache) {
+  if (HasCache()) {
     if (ensure_path_mounted(COMMAND_FILE) != 0 || (unlink(COMMAND_FILE) && errno != ENOENT)) {
       LOG(WARNING) << "Can't unlink " << COMMAND_FILE;
     }
@@ -173,7 +169,7 @@ static bool yes_no(Device* device, const char* question1, const char* question2)
   std::vector<std::string> headers{ question1, question2 };
   std::vector<std::string> items{ " No", " Yes" };
 
-  size_t chosen_item = ui->ShowMenu(
+  size_t chosen_item = device->GetUI()->ShowMenu(
       headers, items, 0, true,
       std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
   return (chosen_item == 1);
@@ -183,7 +179,7 @@ static bool ask_to_wipe_data(Device* device) {
   std::vector<std::string> headers{ "Wipe all user data?", "  THIS CAN NOT BE UNDONE!" };
   std::vector<std::string> items{ " Cancel", " Factory data reset" };
 
-  size_t chosen_item = ui->ShowPromptWipeDataConfirmationMenu(
+  size_t chosen_item = device->GetUI()->ShowPromptWipeDataConfirmationMenu(
       headers, items,
       std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
 
@@ -205,7 +201,7 @@ static InstallResult prompt_and_wipe_data(Device* device) {
   };
   // clang-format on
   for (;;) {
-    size_t chosen_item = ui->ShowPromptWipeDataMenu(
+    size_t chosen_item = device->GetUI()->ShowPromptWipeDataMenu(
         wipe_data_menu_headers, wipe_data_menu_items,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
     // If ShowMenu() returned RecoveryUI::KeyError::INTERRUPTED, WaitKey() was interrupted.
@@ -217,7 +213,8 @@ static InstallResult prompt_and_wipe_data(Device* device) {
     }
 
     if (ask_to_wipe_data(device)) {
-      bool convert_fbe = reason && strcmp(reason, "convert_fbe") == 0;
+      CHECK(device->GetReason().has_value());
+      bool convert_fbe = device->GetReason().value() == "convert_fbe";
       if (WipeData(device, convert_fbe)) {
         return INSTALL_SUCCESS;
       } else {
@@ -229,7 +226,7 @@ static InstallResult prompt_and_wipe_data(Device* device) {
 
 static void choose_recovery_file(Device* device) {
   std::vector<std::string> entries;
-  if (has_cache) {
+  if (HasCache()) {
     for (int i = 0; i < KEEP_LOG_COUNT; i++) {
       auto add_to_entries = [&](const char* filename) {
         std::string log_file(filename);
@@ -263,7 +260,7 @@ static void choose_recovery_file(Device* device) {
 
   size_t chosen_item = 0;
   while (true) {
-    chosen_item = ui->ShowMenu(
+    chosen_item = device->GetUI()->ShowMenu(
         headers, entries, chosen_item, true,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
 
@@ -273,11 +270,11 @@ static void choose_recovery_file(Device* device) {
     }
     if (entries[chosen_item] == "Back") break;
 
-    ui->ShowFile(entries[chosen_item]);
+    device->GetUI()->ShowFile(entries[chosen_item]);
   }
 }
 
-static void run_graphics_test() {
+static void run_graphics_test(RecoveryUI* ui) {
   // Switch to graphics screen.
   ui->ShowText(false);
 
@@ -320,7 +317,7 @@ static void run_graphics_test() {
   ui->ShowText(true);
 }
 
-static int is_ufs_dev()
+static int is_ufs_dev(RecoveryUI* ui)
 {
     char bootdevice[PROPERTY_VALUE_MAX] = {0};
     property_get("ro.boot.bootdevice", bootdevice, "N/A");
@@ -332,7 +329,7 @@ static int is_ufs_dev()
                             sizeof(".ufshc")));
 }
 
-static int do_sdcard_mount_for_ufs()
+static int do_sdcard_mount_for_ufs(RecoveryUI* ui)
 {
     int rc = 0;
     ui->Print("Update via sdcard on UFS dev.Mounting card\n");
@@ -366,8 +363,9 @@ error:
 // as REBOOT, SHUTDOWN, or REBOOT_BOOTLOADER. Returning NO_ACTION means to take the default, which
 // is to reboot or shutdown depending on if the --shutdown_after flag was passed to recovery.
 static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status) {
+  auto ui = device->GetUI();
   for (;;) {
-    finish_recovery();
+    FinishRecovery(ui);
     switch (status) {
       case INSTALL_SUCCESS:
       case INSTALL_NONE:
@@ -405,6 +403,8 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
             : device->InvokeMenuItem(chosen_item);
 
     switch (chosen_action) {
+      case Device::REBOOT_FROM_FASTBOOT:    // Can not happen
+      case Device::SHUTDOWN_FROM_FASTBOOT:  // Can not happen
       case Device::NO_ACTION:
         break;
 
@@ -455,7 +455,7 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
           status = ApplyFromAdb(device, false /* rescue_mode */, &reboot_action);
         } else {
           adb = false;
-          status = ApplyFromSdcard(device, ui);
+          status = ApplyFromSdcard(device);
         }
 
         ui->Print("\nInstall from %s completed with status %d.\n", adb ? "ADB" : "SD card", status);
@@ -466,7 +466,7 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
         if (status != INSTALL_SUCCESS) {
           ui->SetBackground(RecoveryUI::ERROR);
           ui->Print("Installation aborted.\n");
-          copy_logs(save_current_log, has_cache, sehandle);
+          copy_logs(save_current_log);
         } else if (!ui->IsTextVisible()) {
           return Device::NO_ACTION;  // reboot if logs aren't visible
         }
@@ -478,7 +478,7 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
         break;
 
       case Device::RUN_GRAPHICS_TEST:
-        run_graphics_test();
+        run_graphics_test(ui);
         break;
 
       case Device::RUN_LOCALE_TEST: {
@@ -624,6 +624,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   static constexpr struct option OPTIONS[] = {
     { "fastboot", no_argument, nullptr, 0 },
     { "fsck_unshare_blocks", no_argument, nullptr, 0 },
+    { "install_with_fuse", no_argument, nullptr, 0 },
     { "just_exit", no_argument, nullptr, 'x' },
     { "locale", required_argument, nullptr, 0 },
     { "prompt_and_wipe_data", no_argument, nullptr, 0 },
@@ -644,6 +645,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   };
 
   const char* update_package = nullptr;
+  bool install_with_fuse = false;  // memory map the update package by default.
   bool should_wipe_data = false;
   bool should_prompt_and_wipe_data = false;
   bool should_wipe_cache = false;
@@ -663,11 +665,12 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   InstallResult status = INSTALL_SUCCESS;
 
 
-  if (has_cache && ensure_path_mounted(CACHE_ROOT) == 0) {
+  if (HasCache() && ensure_path_mounted(CACHE_ROOT) == 0) {
   //Create /cache/recovery specifically if it is not created
   //As in cases where device is booted into recovery directly after
   //flashing recovery folder is not created in init
-    mkdir_recursively(CACHE_LOG_DIR, 0777, false, sehandle);
+    // TODO(b/140199946) Check what to pass for selabel_handle argument.
+    mkdir_recursively(CACHE_LOG_DIR, 0777, false, nullptr);
   }
 
   int arg;
@@ -688,12 +691,12 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         std::string option = OPTIONS[option_index].name;
         if (option == "fsck_unshare_blocks") {
           fsck_unshare_blocks = true;
-        } else if (option == "locale" || option == "fastboot") {
+        } else if (option == "install_with_fuse") {
+          install_with_fuse = true;
+        } else if (option == "locale" || option == "fastboot" || option == "reason") {
           // Handled in recovery_main.cpp
         } else if (option == "prompt_and_wipe_data") {
           should_prompt_and_wipe_data = true;
-        } else if (option == "reason") {
-          reason = optarg;
         } else if (option == "rescue") {
           rescue = true;
         } else if (option == "retry_count") {
@@ -731,15 +734,18 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   // overridden to a different reboot target per user request.
   Device::BuiltinAction next_action = shutdown_after ? Device::SHUTDOWN : Device::REBOOT;
 
-  printf("stage is [%s]\n", stage.c_str());
-  printf("reason is [%s]\n", reason);
+  printf("stage is [%s]\n", device->GetStage().value_or("").c_str());
+  printf("reason is [%s]\n", device->GetReason().value_or("").c_str());
+
+  auto ui = device->GetUI();
 
   // Set background string to "installing security update" for security update,
   // otherwise set it to "installing system update".
   ui->SetSystemUpdateText(security_update);
 
   int st_cur, st_max;
-  if (!stage.empty() && sscanf(stage.c_str(), "%d/%d", &st_cur, &st_max) == 2) {
+  if (!device->GetStage().has_value() &&
+      sscanf(device->GetStage().value().c_str(), "%d/%d", &st_cur, &st_max) == 2) {
     ui->SetStage(st_cur, st_max);
   }
 
@@ -763,8 +769,8 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
             //on if the device is UFS or EMMC based the path to the sdcard
             //device changes so we cannot rely on the block dev path from
             //recovery.fstab file
-            if (is_ufs_dev()) {
-                if(do_sdcard_mount_for_ufs() != 0) {
+            if (is_ufs_dev(ui)) {
+                if(do_sdcard_mount_for_ufs(ui) != 0) {
                     status = INSTALL_ERROR;
                     goto error;
                 }
@@ -776,8 +782,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
 
   property_list(print_property, nullptr);
   printf("\n");
-
-  ui->Print("Supported API: %d\n", kRecoveryApiVersion);
 
   if (update_package != nullptr) {
     // It's not entirely true that we will modify the flash. But we want
@@ -804,7 +808,29 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         set_retry_bootloader_message(retry_count + 1, args);
       }
 
-      status = InstallPackage(update_package, should_wipe_cache, true, retry_count, ui);
+      if (update_package[0] == '@') {
+        ensure_path_mounted(update_package + 1);
+      } else {
+        ensure_path_mounted(update_package);
+      }
+
+      if (install_with_fuse) {
+        LOG(INFO) << "Installing package " << update_package << " with fuse";
+        status = InstallWithFuseFromPath(update_package, ui);
+      } else if (auto memory_package = Package::CreateMemoryPackage(
+                     update_package,
+                     std::bind(&RecoveryUI::SetProgress, ui, std::placeholders::_1));
+                 memory_package != nullptr) {
+        status = InstallPackage(memory_package.get(), update_package, should_wipe_cache,
+                                retry_count, ui);
+      } else {
+        // We may fail to memory map the package on 32 bit builds for packages with 2GiB+ size.
+        // In such cases, we will try to install the package with fuse. This is not the default
+        // installation method because it introduces a layer of indirection from the kernel space.
+        LOG(WARNING) << "Failed to memory map package " << update_package
+                     << "; falling back to install with fuse";
+        status = InstallWithFuseFromPath(update_package, ui);
+      }
       if (status != INSTALL_SUCCESS) {
         ui->Print("Installation aborted.\n");
 
@@ -812,7 +838,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         // RETRY_LIMIT times before we abandon this OTA update.
         static constexpr int RETRY_LIMIT = 4;
         if (status == INSTALL_RETRY && retry_count < RETRY_LIMIT) {
-          copy_logs(save_current_log, has_cache, sehandle);
+          copy_logs(save_current_log);
           retry_count += 1;
           set_retry_bootloader_message(retry_count, args);
           // Print retry count on screen.
@@ -830,14 +856,15 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         // If this is an eng or userdebug build, then automatically
         // turn the text display on if the script fails so the error
         // message is visible.
-        if (is_ro_debuggable()) {
+        if (IsRoDebuggable()) {
           ui->ShowText(true);
         }
       }
     }
   } else if (should_wipe_data) {
     save_current_log = true;
-    bool convert_fbe = reason && strcmp(reason, "convert_fbe") == 0;
+    CHECK(device->GetReason().has_value());
+    bool convert_fbe = device->GetReason().value() == "convert_fbe";
     if (!WipeData(device, convert_fbe)) {
       status = INSTALL_ERROR;
     }
@@ -887,7 +914,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     // If this is an eng or userdebug build, automatically turn on the text display if no command
     // is specified. Note that this should be called before setting the background to avoid
     // flickering the background image.
-    if (is_ro_debuggable()) {
+    if (IsRoDebuggable()) {
       ui->ShowText(true);
     }
     status = INSTALL_NONE;  // No command specified
@@ -921,7 +948,7 @@ error:
   }
 
   // Save logs and clean up before rebooting or shutting down.
-  finish_recovery();
+  FinishRecovery(ui);
 
   return next_action;
 }

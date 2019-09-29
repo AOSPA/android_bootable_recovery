@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007 The Android Open Source Project
+ * Copyright (C) 2019 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,22 +17,20 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
-// Not using the command-line defined macro here because this header could be included by
-// device-specific recovery libraries. We static assert the value consistency in recovery.cpp.
-static constexpr int kRecoveryApiVersion = 3;
+class BootState {
+ public:
+  BootState(std::string_view reason, std::string_view stage) : reason_(reason), stage_(stage) {}
 
-class RecoveryUI;
-struct selabel_handle;
+  std::string reason() const {
+    return reason_;
+  }
+  std::string stage() const {
+    return stage_;
+  }
 
-extern struct selabel_handle* sehandle;
-extern RecoveryUI* ui;
-extern bool has_cache;
-
-// The current stage, e.g. "1/2".
-extern std::string stage;
-
-// The reason argument provided in "--reason=".
-extern const char* reason;
-
-bool is_ro_debuggable();
+ private:
+  std::string reason_;  // The reason argument provided in "--reason=".
+  std::string stage_;   // The current stage, e.g. "1/2".
+};

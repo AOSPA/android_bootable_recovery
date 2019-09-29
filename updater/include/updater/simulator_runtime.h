@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -23,22 +24,18 @@
 #include <vector>
 
 #include "edify/updater_runtime_interface.h"
+#include "updater/build_info.h"
 
-struct selabel_handle;
-
-class UpdaterRuntime : public UpdaterRuntimeInterface {
+class SimulatorRuntime : public UpdaterRuntimeInterface {
  public:
-  explicit UpdaterRuntime(struct selabel_handle* sehandle) : sehandle_(sehandle) {}
-  ~UpdaterRuntime() override = default;
+  explicit SimulatorRuntime(BuildInfo* source) : source_(source) {}
 
   bool IsSimulator() const override {
-    return false;
+    return true;
   }
 
   std::string GetProperty(const std::string_view key,
                           const std::string_view default_value) const override;
-
-  std::string FindBlockDeviceName(const std::string_view name) const override;
 
   int Mount(const std::string_view location, const std::string_view mount_point,
             const std::string_view fs_type, const std::string_view mount_options) override;
@@ -58,5 +55,8 @@ class UpdaterRuntime : public UpdaterRuntimeInterface {
   bool UpdateDynamicPartitions(const std::string_view op_list_value) override;
 
  private:
-  struct selabel_handle* sehandle_{ nullptr };
+  std::string FindBlockDeviceName(const std::string_view name) const override;
+
+  BuildInfo* source_;
+  std::map<std::string, std::string, std::less<>> mounted_partitions_;
 };

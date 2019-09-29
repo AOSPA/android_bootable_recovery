@@ -38,7 +38,7 @@
 BlockMapData BlockMapData::ParseBlockMapFile(const std::string& block_map_path) {
   std::string content;
   if (!android::base::ReadFileToString(block_map_path, &content)) {
-    LOG(ERROR) << "Failed to read " << block_map_path;
+    PLOG(ERROR) << "Failed to read " << block_map_path;
     return {};
   }
 
@@ -229,9 +229,9 @@ bool Reboot(std::string_view target) {
   return android::base::SetProperty(ANDROID_RB_PROPERTY, cmd);
 }
 
-bool Shutdown() {
-  // "shutdown" doesn't need a "reason" arg nor a comma.
-  return android::base::SetProperty(ANDROID_RB_PROPERTY, "shutdown");
+bool Shutdown(std::string_view target) {
+  std::string cmd = "shutdown," + std::string(target);
+  return android::base::SetProperty(ANDROID_RB_PROPERTY, cmd);
 }
 
 std::vector<char*> StringVectorToNullTerminatedArray(const std::vector<std::string>& args) {
