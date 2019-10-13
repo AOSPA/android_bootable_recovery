@@ -257,7 +257,7 @@ int setup_install_mounts() {
   }
   for (const FstabEntry& entry : fstab) {
     // We don't want to do anything with "/".
-    if (entry.mount_point == "/") {
+    if (entry.mount_point == "/" || entry.mount_point == "/sdcard") {
       continue;
     }
 
