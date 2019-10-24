@@ -14,15 +14,12 @@
  * limitations under the License.
  */
 
-#include "otautil/roots.h"
+#include "recovery_utils/roots.h"
 
-#include <ctype.h>
 #include <fcntl.h>
-#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -33,16 +30,13 @@
 #include <vector>
 
 #include <android-base/logging.h>
-#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <android-base/unique_fd.h>
 #include <cryptfs.h>
 #include <ext4_utils/wipe.h>
 #include <fs_mgr.h>
 #include <fs_mgr/roots.h>
-#include <fs_mgr_dm_linear.h>
 
-#include "otautil/mounts.h"
 #include "otautil/sysutil.h"
 
 using android::fs_mgr::Fstab;
@@ -60,7 +54,11 @@ void load_volume_table() {
   }
 
   fstab.emplace_back(FstabEntry{
-      .mount_point = "/tmp", .fs_type = "ramdisk", .blk_device = "ramdisk", .length = 0 });
+      .blk_device = "ramdisk",
+      .mount_point = "/tmp",
+      .fs_type = "ramdisk",
+      .length = 0,
+  });
 
   std::cout << "recovery filesystem table" << std::endl << "=========================" << std::endl;
   for (size_t i = 0; i < fstab.size(); ++i) {

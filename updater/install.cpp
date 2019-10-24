@@ -60,7 +60,6 @@
 #include "edify/updater_runtime_interface.h"
 #include "otautil/dirutil.h"
 #include "otautil/error_code.h"
-#include "otautil/mounts.h"
 #include "otautil/print_sha1.h"
 #include "otautil/sysutil.h"
 
@@ -271,7 +270,7 @@ Value* PatchPartitionFn(const char* name, State* state,
     return StringValue("");
   }
 
-  bool result = PatchPartition(target, source, *values[0], nullptr);
+  bool result = PatchPartition(target, source, *values[0], nullptr, true);
   return StringValue(result ? "t" : "");
 }
 

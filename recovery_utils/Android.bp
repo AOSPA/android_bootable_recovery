@@ -13,72 +13,69 @@
 // limitations under the License.
 
 cc_defaults {
-    name: "libinstall_defaults",
+    name: "librecovery_utils_defaults",
 
     defaults: [
         "recovery_defaults",
     ],
 
     shared_libs: [
+        "android.hardware.health@2.0",
         "libbase",
-        "libbootloader_message",
-        "libcrypto",
-        "libcutils",
         "libext4_utils",
         "libfs_mgr",
-        "libfusesideload",
-        "libhidl-gen-utils",
         "libhidlbase",
-        "liblog",
         "libselinux",
-        "libtinyxml2",
         "libutils",
-        "libz",
-        "libziparchive",
     ],
 
     static_libs: [
-        "librecovery_utils",
         "libotautil",
 
-        // external dependencies
-        "libvintf_recovery",
-        "libvintf",
+        // External dependencies.
+        "libfstab",
+        "libhealthhalutils",
     ],
 }
 
+// A utility lib that's local to recovery (in contrast, libotautil is exposed to device-specific
+// recovery_ui lib as well as device-specific updater).
 cc_library_static {
-    name: "libinstall",
+    name: "librecovery_utils",
+
     recovery_available: true,
 
     defaults: [
-        "libinstall_defaults",
+        "librecovery_utils_defaults",
     ],
 
     srcs: [
-        "adb_install.cpp",
-        "asn1_decoder.cpp",
-        "fuse_install.cpp",
-        "install.cpp",
-        "package.cpp",
-        "verifier.cpp",
-        "wipe_data.cpp",
-        "wipe_device.cpp",
+        "battery_utils.cpp",
+        "logging.cpp",
+        "parse_install_logs.cpp",
+        "roots.cpp",
+        "thermalutil.cpp",
     ],
 
     header_libs: [
-        "libminadbd_headers",
-    ],
-
-    shared_libs: [
-        "librecovery_ui",
+        "libvold_headers",
     ],
 
     export_include_dirs: [
         "include",
     ],
 
-    export_shared_lib_headers: [
-        "librecovery_ui",
+    export_static_lib_headers: [
+        // roots.h includes <fstab/fstab.h>.
+        "libfstab",
+    ],
+
+    // Should avoid exposing to the libs that might be used in device-specific codes (e.g.
+    // libedify, libotautil, librecovery_ui).
+    visibility: [
+        "//bootable/recovery",
+        "//bootable/recovery/install",
+        "//bootable/recovery/minadbd",
+        "//bootable/recovery/tests",
     ],
 }

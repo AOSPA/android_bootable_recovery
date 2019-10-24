@@ -58,7 +58,6 @@ cc_defaults {
     ],
 
     shared_libs: [
-        "android.hardware.health@2.0",
         "libbase",
         "libbootloader_message",
         "libcrypto",
@@ -69,13 +68,12 @@ cc_defaults {
     ],
 
     static_libs: [
+        "libc++fs",
         "libinstall",
         "librecovery_fastboot",
         "libminui",
+        "librecovery_utils",
         "libotautil",
-
-        // external dependencies
-        "libhealthhalutils",
     ],
 }
 
@@ -104,6 +102,7 @@ cc_binary {
     defaults: [
         "libinstall_defaults",
         "librecovery_defaults",
+        "librecovery_utils_defaults",
     ],
 
     srcs: [
@@ -148,7 +147,7 @@ cc_binary {
     ],
 
     static_libs: [
-        "libotautil",
+        "librecovery_utils",
     ],
 
     init_rc: [
@@ -174,7 +173,7 @@ cc_binary {
     ],
 
     static_libs: [
-        "libotautil",
+        "librecovery_utils",
     ],
 
     init_rc: [

@@ -38,7 +38,7 @@
 #include "fuse_provider.h"
 #include "fuse_sideload.h"
 #include "install/install.h"
-#include "otautil/roots.h"
+#include "recovery_utils/roots.h"
 
 #define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
 
