@@ -94,6 +94,7 @@ librecovery_static_libs = [
     "liblp",
     "libvndksupport",
     "libtinyxml2",
+    "libc++fs",
 ]
 
 cc_test {
@@ -117,6 +118,7 @@ cc_test {
         "librecovery_ui",
         "libfusesideload",
         "libminui",
+        "librecovery_utils",
         "libotautil",
         "libupdater_device",
         "libupdater_core",
