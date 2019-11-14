@@ -25,12 +25,15 @@
 // 0   - 2K     For bootloader_message
 // 2K  - 16K    Used by Vendor's bootloader (the 2K - 4K range may be optionally used
 //              as bootloader_message_ab struct)
-// 16K - 64K    Used by uncrypt and recovery to store wipe_package for A/B devices
+// 16K - 32K    Used by uncrypt and recovery to store wipe_package for A/B devices
+// 32K - 64K    System space, used for miscellanious AOSP features. See below.
 // Note that these offsets are admitted by bootloader,recovery and uncrypt, so they
 // are not configurable without changing all of them.
 constexpr size_t BOOTLOADER_MESSAGE_OFFSET_IN_MISC = 0;
 constexpr size_t VENDOR_SPACE_OFFSET_IN_MISC = 2 * 1024;
 constexpr size_t WIPE_PACKAGE_OFFSET_IN_MISC = 16 * 1024;
+constexpr size_t SYSTEM_SPACE_OFFSET_IN_MISC = 32 * 1024;
+constexpr size_t SYSTEM_SPACE_SIZE_IN_MISC = 32 * 1024;
 
 /* Bootloader Message (2-KiB)
  *
@@ -182,15 +185,44 @@ static_assert(sizeof(struct bootloader_control) ==
               "struct bootloader_control has wrong size");
 #endif
 
+// Holds Virtual A/B merge status information. Current version is 1. New fields
+// must be added to the end.
+struct misc_virtual_ab_message {
+  uint8_t version;
+  uint8_t merge_status;  // IBootControl 1.1, MergeStatus enum.
+  uint8_t source_slot;   // Slot number when merge_status was written.
+  uint8_t reserved[61];
+} __attribute__((packed));
+
+#define MISC_VIRTUAL_AB_MESSAGE_VERSION 1
+
+#if (__STDC_VERSION__ >= 201112L) || defined(__cplusplus)
+static_assert(sizeof(struct misc_virtual_ab_message) == 64,
+              "struct misc_virtual_ab_message has wrong size");
+#endif
+
+// This struct is not meant to be used directly, rather, it is to make
+// computation of offsets easier. New fields must be added to the end.
+struct misc_system_space_layout {
+  misc_virtual_ab_message virtual_ab_message;
+} __attribute__((packed));
+
 #ifdef __cplusplus
 
 #include <string>
 #include <vector>
 
+// Gets the block device name of /misc partition.
+std::string get_misc_blk_device(std::string* err);
 // Return the block device name for the bootloader message partition and waits
 // for the device for up to 10 seconds. In case of error returns the empty
 // string.
 std::string get_bootloader_message_blk_device(std::string* err);
+
+// Writes |size| bytes of data from buffer |p| to |misc_blk_device| at |offset|. If the write fails,
+// sets the error message in |err|.
+bool write_misc_partition(const void* p, size_t size, const std::string& misc_blk_device,
+                          size_t offset, std::string* err);
 
 // Read bootloader message into boot. Error message will be set in err.
 bool read_bootloader_message(bootloader_message* boot, std::string* err);
@@ -236,13 +268,9 @@ bool read_wipe_package(std::string* package_data, size_t size, std::string* err)
 // Write the wipe package into BCB (to offset WIPE_PACKAGE_OFFSET_IN_MISC).
 bool write_wipe_package(const std::string& package_data, std::string* err);
 
-// Reads data from the vendor space in /misc partition, with the given offset and size. Note that
-// offset is in relative to the start of vendor space.
-bool ReadMiscPartitionVendorSpace(void* data, size_t size, size_t offset, std::string* err);
-
-// Writes the given data to the vendor space in /misc partition, at the given offset. Note that
-// offset is in relative to the start of the vendor space.
-bool WriteMiscPartitionVendorSpace(const void* data, size_t size, size_t offset, std::string* err);
+// Read or write the Virtual A/B message from system space in /misc.
+bool ReadMiscVirtualAbMessage(misc_virtual_ab_message* message, std::string* err);
+bool WriteMiscVirtualAbMessage(const misc_virtual_ab_message& message, std::string* err);
 
 #else
 
