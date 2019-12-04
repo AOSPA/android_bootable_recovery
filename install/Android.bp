@@ -40,6 +40,7 @@ cc_defaults {
     static_libs: [
         "librecovery_utils",
         "libotautil",
+        "libsnapshot_nobinder",
 
         // external dependencies
         "libvintf_recovery",
@@ -61,6 +62,7 @@ cc_library_static {
         "fuse_install.cpp",
         "install.cpp",
         "package.cpp",
+        "snapshot_utils.cpp",
         "verifier.cpp",
         "wipe_data.cpp",
         "wipe_device.cpp",
