@@ -39,6 +39,7 @@ cc_defaults {
         android: {
             shared_libs: [
                 "libutils",
+                "libvndksupport",
             ],
         },
 
@@ -81,7 +82,6 @@ librecovery_static_libs = [
     "libotautil",
 
     "libhealthhalutils",
-    "libvintf_recovery",
     "libvintf",
 
     "android.hardware.health@2.0",
@@ -92,7 +92,6 @@ librecovery_static_libs = [
     "libhidlbase",
     "libbinderthreadstate",
     "liblp",
-    "libvndksupport",
     "libtinyxml2",
     "libc++fs",
 ]
