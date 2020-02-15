@@ -48,7 +48,6 @@
 #include <ziparchive/zip_archive.h>
 
 #include "bootloader_message/bootloader_message.h"
-#include "fsck_unshare_blocks.h"
 #include "install/adb_install.h"
 #include "install/fuse_install.h"
 #include "install/install.h"
@@ -360,11 +359,56 @@ error:
     return -1;
 }
 
+static void WriteUpdateInProgress() {
+  std::string err;
+  if (!update_bootloader_message({ "--reason=update_in_progress" }, &err)) {
+    LOG(ERROR) << "Failed to WriteUpdateInProgress: " << err;
+  }
+}
+
+static bool AskToReboot(Device* device, Device::BuiltinAction chosen_action) {
+  bool is_non_ab = android::base::GetProperty("ro.boot.slot_suffix", "").empty();
+  bool is_virtual_ab = android::base::GetBoolProperty("ro.virtual_ab.enabled", false);
+  if (!is_non_ab && !is_virtual_ab) {
+    // Only prompt for non-A/B or Virtual A/B devices.
+    return true;
+  }
+
+  std::string header_text;
+  std::string item_text;
+  switch (chosen_action) {
+    case Device::REBOOT:
+      header_text = "reboot";
+      item_text = " Reboot system now";
+      break;
+    case Device::SHUTDOWN:
+      header_text = "power off";
+      item_text = " Power off";
+      break;
+    default:
+      LOG(FATAL) << "Invalid chosen action " << chosen_action;
+      break;
+  }
+
+  std::vector<std::string> headers{ "WARNING: Previous installation has failed.",
+                                    "  Your device may fail to boot if you " + header_text +
+                                        " now.",
+                                    "  Confirm reboot?" };
+  std::vector<std::string> items{ " Cancel", item_text };
+
+  size_t chosen_item = device->GetUI()->ShowMenu(
+      headers, items, 0, true /* menu_only */,
+      std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
+
+  return (chosen_item == 1);
+}
+
 // Shows the recovery UI and waits for user input. Returns one of the device builtin actions, such
 // as REBOOT, SHUTDOWN, or REBOOT_BOOTLOADER. Returning NO_ACTION means to take the default, which
 // is to reboot or shutdown depending on if the --shutdown_after flag was passed to recovery.
 static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status) {
   auto ui = device->GetUI();
+  bool update_in_progress = (device->GetReason().value_or("") == "update_in_progress");
   for (;;) {
     FinishRecovery(ui);
     switch (status) {
@@ -389,8 +433,14 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
     }
     ui->SetProgressType(RecoveryUI::EMPTY);
 
+    std::vector<std::string> headers;
+    if (update_in_progress) {
+      headers = { "WARNING: Previous installation has failed.",
+                  "  Your device may fail to boot if you reboot or power off now." };
+    }
+
     size_t chosen_item = ui->ShowMenu(
-        {}, device->GetMenuItems(), 0, false,
+        headers, device->GetMenuItems(), 0, false,
         std::bind(&Device::HandleMenuKey, device, std::placeholders::_1, std::placeholders::_2));
     // Handle Interrupt key
     if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
@@ -411,13 +461,26 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
 
       case Device::ENTER_FASTBOOT:
       case Device::ENTER_RECOVERY:
-      case Device::REBOOT:
       case Device::REBOOT_BOOTLOADER:
       case Device::REBOOT_FASTBOOT:
       case Device::REBOOT_RECOVERY:
       case Device::REBOOT_RESCUE:
-      case Device::SHUTDOWN:
         return chosen_action;
+
+      case Device::REBOOT:
+      case Device::SHUTDOWN:
+        if (!ui->IsTextVisible()) {
+          return Device::REBOOT;
+        }
+        // okay to reboot; no need to ask.
+        if (!update_in_progress) {
+          return Device::REBOOT;
+        }
+        // An update might have been failed. Ask if user really wants to reboot.
+        if (AskToReboot(device, chosen_action)) {
+          return Device::REBOOT;
+        }
+        break;
 
       case Device::WIPE_DATA:
         save_current_log = true;
@@ -446,6 +509,9 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
       case Device::ENTER_RESCUE: {
         save_current_log = true;
 
+        update_in_progress = true;
+        WriteUpdateInProgress();
+
         bool adb = true;
         Device::BuiltinAction reboot_action;
         if (chosen_action == Device::ENTER_RESCUE) {
@@ -464,12 +530,15 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
           return reboot_action;
         }
 
-        if (status != INSTALL_SUCCESS) {
+        if (status == INSTALL_SUCCESS) {
+          update_in_progress = false;
+          if (!ui->IsTextVisible()) {
+            return Device::NO_ACTION;  // reboot if logs aren't visible
+          }
+        } else {
           ui->SetBackground(RecoveryUI::ERROR);
           ui->Print("Installation aborted.\n");
           copy_logs(save_current_log);
-        } else if (!ui->IsTextVisible()) {
-          return Device::NO_ACTION;  // reboot if logs aren't visible
         }
         break;
       }
@@ -573,7 +642,6 @@ static void log_failure_code(ErrorCode code, const std::string& update_package) 
 Device::BuiltinAction start_recovery(Device* device, const std::vector<std::string>& args) {
   static constexpr struct option OPTIONS[] = {
     { "fastboot", no_argument, nullptr, 0 },
-    { "fsck_unshare_blocks", no_argument, nullptr, 0 },
     { "install_with_fuse", no_argument, nullptr, 0 },
     { "just_exit", no_argument, nullptr, 'x' },
     { "locale", required_argument, nullptr, 0 },
@@ -606,7 +674,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
   bool rescue = false;
   bool just_exit = false;
   bool shutdown_after = false;
-  bool fsck_unshare_blocks = false;
   int retry_count = 0;
   bool security_update = false;
   std::string locale;
@@ -639,9 +706,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
         break;
       case 0: {
         std::string option = OPTIONS[option_index].name;
-        if (option == "fsck_unshare_blocks") {
-          fsck_unshare_blocks = true;
-        } else if (option == "install_with_fuse") {
+        if (option == "install_with_fuse") {
           install_with_fuse = true;
         } else if (option == "locale" || option == "fastboot" || option == "reason") {
           // Handled in recovery_main.cpp
@@ -852,10 +917,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     save_current_log = true;
     status = ApplyFromAdb(device, true /* rescue_mode */, &next_action);
     ui->Print("\nInstall from ADB complete (status: %d).\n", status);
-  } else if (fsck_unshare_blocks) {
-    if (!do_fsck_unshare_blocks()) {
-      status = INSTALL_ERROR;
-    }
   } else if (!just_exit) {
     // If this is an eng or userdebug build, automatically turn on the text display if no command
     // is specified. Note that this should be called before setting the background to avoid
