@@ -185,6 +185,11 @@ bool ask_to_continue_unverified(Device* device) {
   }
 }
 
+bool ask_to_continue_downgrade(Device* device) {
+  device->GetUI()->SetProgressType(RecoveryUI::EMPTY);
+  return yes_no(device, "This package will downgrade your system", "Install anyway?");
+}
+
 static bool ask_to_wipe_data(Device* device) {
   std::vector<std::string> headers{ "Wipe all user data?", "  THIS CAN NOT BE UNDONE!" };
   std::vector<std::string> items{ " Cancel", " Factory data reset" };
