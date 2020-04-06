@@ -194,6 +194,7 @@ static std::string load_locale_from_cache() {
 }
 
 static void copy_userdata_files() {
+  android::base::SetLogger(android::base::StdioLogger);
   if (ensure_path_mounted("/data") == 0) {
     if (access(adb_keys_root, F_OK) != 0) {
       if (access(adb_keys_data, R_OK) == 0) {
@@ -205,6 +206,7 @@ static void copy_userdata_files() {
     }
     ensure_path_unmounted("/data");
   }
+  android::base::SetLogger(UiLogger);
 }
 
 // Sets the usb config to 'state'.
