@@ -39,6 +39,7 @@ static std::vector<std::pair<std::string, Device::BuiltinAction>> g_menu_actions
   { "Wipe system partition", Device::WIPE_SYSTEM },
   { "Mount /system", Device::MOUNT_SYSTEM },
   { "View recovery logs", Device::VIEW_RECOVERY_LOGS },
+  { "Enable ADB", Device::ENABLE_ADB },
   { "Run graphics test", Device::RUN_GRAPHICS_TEST },
   { "Run locale test", Device::RUN_LOCALE_TEST },
   { "Enter rescue", Device::ENTER_RESCUE },

@@ -606,6 +606,14 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
         choose_recovery_file(device);
         break;
 
+      case Device::ENABLE_ADB:
+        android::base::SetProperty("ro.adb.secure.recovery", "0");
+        android::base::SetProperty("ctl.restart", "adbd");
+        device->RemoveMenuItemForAction(Device::ENABLE_ADB);
+        device->GoHome();
+        ui->Print("Enabled ADB.\n");
+        break;
+
       case Device::RUN_GRAPHICS_TEST:
         run_graphics_test(ui);
         break;

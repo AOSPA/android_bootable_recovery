@@ -68,6 +68,7 @@ class Device {
     REBOOT_FROM_FASTBOOT = 20,
     SHUTDOWN_FROM_FASTBOOT = 21,
     WIPE_SYSTEM = 100,
+    ENABLE_ADB = 101,
   };
 
   explicit Device(RecoveryUI* ui);
