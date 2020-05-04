@@ -804,6 +804,11 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
 
   std::vector<std::string> title_lines =
       android::base::Split(android::base::GetProperty("ro.aospa.version", ""), ":");
+  if (android::base::GetBoolProperty("ro.build.ab_update", false)) {
+    std::string slot = android::base::GetProperty("ro.boot.slot_suffix", "");
+    if (android::base::StartsWith(slot, "_")) slot.erase(0, 1);
+    title_lines.push_back("Active slot: " + slot);
+  }
   title_lines.insert(std::begin(title_lines), "AOSPA Recovery");
   ui->SetTitle(title_lines);
 
