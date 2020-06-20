@@ -1,4 +1,4 @@
-import /init.recovery.${ro.hardware}.rc
+import /system/etc/init/hw/init.recovery.${ro.hardware}.rc
 
 on early-init
     # Set the security context of /postinstall if present.
