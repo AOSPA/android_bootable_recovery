@@ -64,8 +64,10 @@ static constexpr const char* COMMAND_FILE = "/cache/recovery/command";
 static constexpr const char* LOCALE_FILE = "/cache/recovery/last_locale";
 
 static constexpr const char* CACHE_ROOT = "/cache";
+static constexpr const char* SDCARD_ROOT = "/sdcard";
 
 bool has_cache = false;
+bool has_sdcard = false;
 
 RecoveryUI* ui = nullptr;
 struct selabel_handle* sehandle;
@@ -332,6 +334,7 @@ int main(int argc, char** argv) {
 
   load_volume_table();
   has_cache = volume_for_mount_point(CACHE_ROOT) != nullptr;
+  has_sdcard = volume_for_mount_point(SDCARD_ROOT) != nullptr;
 
   std::vector<std::string> args = get_args(argc, argv);
   auto args_to_parse = StringVectorToNullTerminatedArray(args);
@@ -419,6 +422,10 @@ int main(int argc, char** argv) {
 
   if (!has_cache) {
     device->RemoveMenuItemForAction(Device::WIPE_CACHE);
+  }
+
+  if (!has_sdcard) {
+    device->RemoveMenuItemForAction(Device::APPLY_SDCARD);
   }
 
   if (!android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
