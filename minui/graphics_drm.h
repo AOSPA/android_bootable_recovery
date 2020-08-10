@@ -27,7 +27,8 @@
 #include "minui/minui.h"
 
 #define NUM_MAIN 1
-#define NUM_PLANES 2
+#define NUM_PLANES 4
+#define DEFAULT_NUM_LMS 2
 
 struct Crtc {
   drmModeObjectProperties *props;
@@ -81,7 +82,6 @@ class MinuiBackendDrm : public MinuiBackend {
   void Blank(bool) override;
 
  private:
-  enum screen_side{Left, Right};
   int DrmDisableCrtc(drmModeAtomicReqPtr atomic_req);
   int DrmEnableCrtc(drmModeAtomicReqPtr atomic_req);
   void DisableNonMainCrtcs(int fd, drmModeRes* resources, drmModeCrtc* main_crtc);
