@@ -780,7 +780,9 @@ bool SetupPackageMount(const std::string& package_path, bool* should_use_fuse) {
   }
 
   constexpr const char* CACHE_ROOT = "/cache";
-  if (android::base::StartsWith(package_path, CACHE_ROOT)) {
+  constexpr const char* DATA_ROOT = "/data";
+  if (android::base::StartsWith(package_path, CACHE_ROOT) ||
+      android::base::StartsWith(package_path, DATA_ROOT)) {
     *should_use_fuse = false;
   }
   return true;
