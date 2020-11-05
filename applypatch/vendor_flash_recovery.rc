@@ -1,3 +1,8 @@
 service vendor_flash_recovery /vendor/bin/install-recovery.sh
     class main
     oneshot
+    disabled
+
+# Get execute only if the prop is setup
+on property:persist.vendor.flash.recovery=1
+    start vendor_flash_recovery
