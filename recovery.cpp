@@ -71,10 +71,12 @@ static constexpr const char* COMMAND_FILE = "/cache/recovery/command";
 static constexpr const char* LAST_KMSG_FILE = "/cache/recovery/last_kmsg";
 static constexpr const char* LAST_LOG_FILE = "/cache/recovery/last_log";
 static constexpr const char* LOCALE_FILE = "/cache/recovery/last_locale";
-
-#define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
-
 static constexpr const char* CACHE_ROOT = "/cache";
+
+#define MMC_0_TYPE_PATH "/sys/block/mmcblk0/device/type"
+#define SDCARD_BLK_0_PATH "/dev/block/mmcblk0p1"
+#define MMC_1_TYPE_PATH "/sys/block/mmcblk1/device/type"
+#define SDCARD_BLK_1_PATH "/dev/block/mmcblk1p1"
 
 static bool save_current_log = false;
 
@@ -317,46 +319,73 @@ static void run_graphics_test(RecoveryUI* ui) {
   ui->ShowText(true);
 }
 
-static int is_ufs_dev(RecoveryUI* ui)
+// Check whether the mmc type of provided path (/sys/block/mmcblk*/device/type)
+// is SD (sdcard) or not.
+static int check_mmc_is_sdcard (const char* mmc_type_path)
 {
-    char bootdevice[PROPERTY_VALUE_MAX] = {0};
-    property_get("ro.boot.bootdevice", bootdevice, "N/A");
-    ui->Print("ro.boot.bootdevice is: %s\n",bootdevice);
-    if (strlen(bootdevice) < strlen(".ufshc") + 1)
-        return 0;
-    return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
-                            ".ufshc",
-                            sizeof(".ufshc")));
+  std::string mmc_type;
+
+  LOG(INFO) << "Checking mmc type for path : " << mmc_type_path;
+
+  if (!android::base::ReadFileToString(mmc_type_path, &mmc_type)) {
+    LOG(ERROR) << "Failed to read mmc type : " << strerror(errno);
+    return -1;
+  }
+  LOG(INFO) << "MMC type is : " << mmc_type.c_str();
+  if (!strncmp(mmc_type.c_str(), "SD", strlen("SD")))
+    return 0;
+  else
+    return -1;
 }
 
-static int do_sdcard_mount_for_ufs(RecoveryUI* ui)
+// Gather mount point and other info from fstab, find the right block
+// path where sdcard is mounted, and try mounting it.
+static int do_sdcard_mount(RecoveryUI* ui)
 {
-    int rc = 0;
-    ui->Print("Update via sdcard on UFS dev.Mounting card\n");
-    Volume *v = volume_for_mount_point("/sdcard");
-    if (v == nullptr) {
-            ui->Print("Unknown volume for /sdcard.Check fstab\n");
-            goto error;
-    }
-    if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
-            ui->Print("Unsupported format on the sdcard: %s\n",
-                            v->fs_type.c_str());
-            goto error;
-    }
-    rc = mount(UFS_DEV_SDCARD_BLK_PATH,
-                    v->mount_point.c_str(),
-                    v->fs_type.c_str(),
-                    v->flags,
-                    v->fs_options.c_str());
-    if (rc) {
-            ui->Print("Failed to mount sdcard : %s\n",
-                            strerror(errno));
-            goto error;
-    }
-    ui->Print("Done mounting sdcard\n");
-    return 0;
+  int rc = 0;
+  ui->Print("Update via sdcard. Mounting sdcard\n");
+  Volume *v = volume_for_mount_point("/sdcard");
+  if (v == nullptr) {
+          ui->Print("Unknown volume for /sdcard. Check fstab\n");
+          goto error;
+  }
+  if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
+          ui->Print("Unsupported format on the sdcard: %s\n",
+                          v->fs_type.c_str());
+          goto error;
+  }
+
+  if (check_mmc_is_sdcard(MMC_0_TYPE_PATH) == 0) {
+    LOG(INFO) << "Mounting sdcard on " << SDCARD_BLK_0_PATH;
+    rc = mount(SDCARD_BLK_0_PATH,
+               v->mount_point.c_str(),
+               v->fs_type.c_str(),
+               v->flags,
+               v->fs_options.c_str());
+  }
+  else if (check_mmc_is_sdcard(MMC_1_TYPE_PATH) == 0) {
+    LOG(INFO) << "Mounting sdcard on " << SDCARD_BLK_1_PATH;
+    rc = mount(SDCARD_BLK_1_PATH,
+               v->mount_point.c_str(),
+               v->fs_type.c_str(),
+               v->flags,
+               v->fs_options.c_str());
+  }
+  else {
+    LOG(ERROR) << "Unable to get the block path for sdcard.";
+    goto error;
+  }
+
+  if (rc) {
+          ui->Print("Failed to mount sdcard : %s\n",
+                          strerror(errno));
+          goto error;
+  }
+  ui->Print("Done mounting sdcard\n");
+  return 0;
+
 error:
-    return -1;
+  return -1;
 }
 
 static void WriteUpdateInProgress() {
@@ -780,17 +809,9 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
 
    if (update_package) {
         if (!strncmp("/sdcard", update_package, 7)) {
-            //If this is a UFS device lets mount the sdcard ourselves.Depending
-            //on if the device is UFS or EMMC based the path to the sdcard
-            //device changes so we cannot rely on the block dev path from
-            //recovery.fstab file
-            if (is_ufs_dev(ui)) {
-                if(do_sdcard_mount_for_ufs(ui) != 0) {
-                    status = INSTALL_ERROR;
-                    goto error;
-                }
-            } else {
-                ui->Print("Update via sdcard on EMMC dev. Using path from fstab\n");
+            if(do_sdcard_mount(ui) != 0) {
+                status = INSTALL_ERROR;
+                goto error;
             }
         }
     }
