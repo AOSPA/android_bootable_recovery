@@ -363,9 +363,7 @@ InstallResult ApplyFromAdb(Device* device, bool rescue_mode, Device::BuiltinActi
   };
 
   if (!rescue_mode) {
-    ui->Print(
-        "\n\nNow send the package you want to apply\n"
-        "to the device with \"adb sideload <filename>\"...\n");
+    ui->ShowText(false);
   } else {
     command_map.emplace(MinadbdCommand::kWipeData, [&device]() {
       bool result = WipeData(device, false);
