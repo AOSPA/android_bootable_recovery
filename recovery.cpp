@@ -565,6 +565,7 @@ static Device::BuiltinAction PromptAndWait(Device* device, InstallResult status)
             return Device::NO_ACTION;  // reboot if logs aren't visible
           }
         } else {
+          ui->ShowText(true);
           ui->SetBackground(RecoveryUI::ERROR);
           ui->Print("Installation aborted.\n");
           copy_logs(save_current_log);
