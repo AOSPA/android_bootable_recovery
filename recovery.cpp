@@ -919,9 +919,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     // it will reboot after sideload finishes even if there are errors. This is to enable automated
     // testing.
     save_current_log = true;
-    if (!sideload_auto_reboot) {
-      ui->ShowText(true);
-    }
+    ui->ShowText(false);
     status = ApplyFromAdb(device, false /* rescue_mode */, &next_action);
     ui->Print("\nInstall from ADB complete (status: %d).\n", status);
     if (sideload_auto_reboot) {
