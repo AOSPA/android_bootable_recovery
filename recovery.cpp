@@ -201,6 +201,7 @@ static InstallResult prompt_and_wipe_data(Device* device) {
   std::vector<std::string> wipe_data_menu_items {
     "Try again",
     "Factory data reset",
+    "Go back",
   };
   // clang-format on
   for (;;) {
@@ -211,7 +212,10 @@ static InstallResult prompt_and_wipe_data(Device* device) {
     if (chosen_item == static_cast<size_t>(RecoveryUI::KeyError::INTERRUPTED)) {
       return INSTALL_KEY_INTERRUPTED;
     }
-    if (chosen_item != 1) {
+    if (chosen_item == 2) {
+      return INSTALL_NONE;     // Go back, show menu
+    }
+    if (chosen_item == 0) {
       return INSTALL_SUCCESS;  // Just reboot, no wipe; not a failure, user asked for it
     }
 
@@ -912,7 +916,7 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     ui->ShowText(true);
     ui->SetBackground(RecoveryUI::ERROR);
     status = prompt_and_wipe_data(device);
-    if (status != INSTALL_KEY_INTERRUPTED) {
+    if (status == INSTALL_SUCCESS) {
       ui->ShowText(false);
     }
   } else if (should_wipe_cache) {
