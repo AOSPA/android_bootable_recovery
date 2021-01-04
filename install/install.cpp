@@ -77,7 +77,7 @@ bool ReadMetadataFromPackage(ZipArchiveHandle zip, std::map<std::string, std::st
   CHECK(metadata != nullptr);
 
   static constexpr const char* METADATA_PATH = "META-INF/com/android/metadata";
-  ZipEntry entry;
+  ZipEntry64 entry;
   if (FindEntry(zip, METADATA_PATH, &entry) != 0) {
     LOG(ERROR) << "Failed to find " << METADATA_PATH;
     return false;
@@ -241,12 +241,18 @@ bool SetUpAbUpdateCommands(const std::string& package, ZipArchiveHandle zip, int
   // For A/B updates we extract the payload properties to a buffer and obtain the RAW payload offset
   // in the zip file.
   static constexpr const char* AB_OTA_PAYLOAD_PROPERTIES = "payload_properties.txt";
-  ZipEntry properties_entry;
+  ZipEntry64 properties_entry;
   if (FindEntry(zip, AB_OTA_PAYLOAD_PROPERTIES, &properties_entry) != 0) {
     LOG(ERROR) << "Failed to find " << AB_OTA_PAYLOAD_PROPERTIES;
     return false;
   }
-  uint32_t properties_entry_length = properties_entry.uncompressed_length;
+  auto properties_entry_length = properties_entry.uncompressed_length;
+  if (properties_entry_length > std::numeric_limits<size_t>::max()) {
+    LOG(ERROR) << "Failed to extract " << AB_OTA_PAYLOAD_PROPERTIES
+               << " because's uncompressed size exceeds size of address space. "
+               << properties_entry_length;
+    return false;
+  }
   std::vector<uint8_t> payload_properties(properties_entry_length);
   int32_t err =
       ExtractToMemory(zip, &properties_entry, payload_properties.data(), properties_entry_length);
@@ -256,7 +262,7 @@ bool SetUpAbUpdateCommands(const std::string& package, ZipArchiveHandle zip, int
   }
 
   static constexpr const char* AB_OTA_PAYLOAD = "payload.bin";
-  ZipEntry payload_entry;
+  ZipEntry64 payload_entry;
   if (FindEntry(zip, AB_OTA_PAYLOAD, &payload_entry) != 0) {
     LOG(ERROR) << "Failed to find " << AB_OTA_PAYLOAD;
     return false;
@@ -278,7 +284,7 @@ bool SetUpNonAbUpdateCommands(const std::string& package, ZipArchiveHandle zip, 
 
   // In non-A/B updates we extract the update binary from the package.
   static constexpr const char* UPDATE_BINARY_NAME = "META-INF/com/google/android/update-binary";
-  ZipEntry binary_entry;
+  ZipEntry64 binary_entry;
   if (FindEntry(zip, UPDATE_BINARY_NAME, &binary_entry) != 0) {
     LOG(ERROR) << "Failed to find update binary " << UPDATE_BINARY_NAME;
     return false;

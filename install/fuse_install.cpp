@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 
+#include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/strings.h>
 #include <cutils/properties.h>
@@ -40,7 +41,10 @@
 #include "install/install.h"
 #include "recovery_utils/roots.h"
 
-#define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
+#define MMC_0_TYPE_PATH "/sys/block/mmcblk0/device/type"
+#define SDCARD_BLK_0_PATH "/dev/block/mmcblk0p1"
+#define MMC_1_TYPE_PATH "/sys/block/mmcblk1/device/type"
+#define SDCARD_BLK_1_PATH "/dev/block/mmcblk1p1"
 
 static constexpr const char* SDCARD_ROOT = "/sdcard";
 // How long (in seconds) we wait for the fuse-provided package file to
@@ -207,23 +211,33 @@ InstallResult InstallWithFuseFromPath(std::string_view path, RecoveryUI* ui) {
   return result;
 }
 
-static int is_ufs_dev() {
-  char bootdevice[PROPERTY_VALUE_MAX] = {0};
-  property_get("ro.boot.bootdevice", bootdevice, "N/A");
-  LOG(ERROR) << "ro.boot.bootdevice is: " << bootdevice << "\n";
-  if (strlen(bootdevice) < strlen(".ufshc") + 1)
+// Check whether the mmc type of provided path (/sys/block/mmcblk*/device/type)
+// is SD (sdcard) or not.
+static int check_mmc_is_sdcard (const char* mmc_type_path)
+{
+  std::string mmc_type;
+
+  LOG(INFO) << "Checking mmc type for path : " << mmc_type_path;
+
+  if (!android::base::ReadFileToString(mmc_type_path, &mmc_type)) {
+    LOG(ERROR) << "Failed to read mmc type : " << strerror(errno);
+    return -1;
+  }
+  LOG(INFO) << "MMC type is : " << mmc_type.c_str();
+  if (!strncmp(mmc_type.c_str(), "SD", strlen("SD")))
     return 0;
-  return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
-                   ".ufshc",
-                   sizeof(".ufshc")));
+  else
+    return -1;
 }
 
-static int do_sdcard_mount_for_ufs() {
+// Gather mount point and other info from fstab, find the right block
+// path where sdcard is mounted, and try mounting it.
+static int do_sdcard_mount() {
   int rc = 0;
-  LOG(ERROR) << "Update via sdcard on UFS dev.Mounting card\n";
+
   Volume *v = volume_for_mount_point("/sdcard");
   if (v == nullptr) {
-    LOG(ERROR) << "Unknown volume for /sdcard.Check fstab\n";
+    LOG(ERROR) << "Unknown volume for /sdcard. Check fstab\n";
     goto error;
   }
   if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
@@ -231,34 +245,46 @@ static int do_sdcard_mount_for_ufs() {
                << v->fs_type.c_str() << "\n";
     goto error;
   }
-  rc = mount(UFS_DEV_SDCARD_BLK_PATH,
-             v->mount_point.c_str(),
-             v->fs_type.c_str(),
-             v->flags,
-             v->fs_options.c_str());
+
+  if (check_mmc_is_sdcard(MMC_0_TYPE_PATH) == 0) {
+    LOG(INFO) << "Mounting sdcard on " << SDCARD_BLK_0_PATH;
+    rc = mount(SDCARD_BLK_0_PATH,
+               v->mount_point.c_str(),
+               v->fs_type.c_str(),
+               v->flags,
+               v->fs_options.c_str());
+  }
+  else if (check_mmc_is_sdcard(MMC_1_TYPE_PATH) == 0) {
+    LOG(INFO) << "Mounting sdcard on " << SDCARD_BLK_1_PATH;
+    rc = mount(SDCARD_BLK_1_PATH,
+               v->mount_point.c_str(),
+               v->fs_type.c_str(),
+               v->flags,
+               v->fs_options.c_str());
+  }
+  else {
+    LOG(ERROR) << "Unable to get the block path for sdcard.";
+    goto error;
+  }
+
   if (rc) {
     LOG(ERROR) << "Failed to mount sdcard: " << strerror(errno) << "\n";
     goto error;
   }
-  LOG(ERROR) << "Done mounting sdcard\n";
+  LOG(INFO) << "Done mounting sdcard\n";
   return 0;
+
 error:
   return -1;
 }
 
 InstallResult ApplyFromSdcard(Device* device) {
   auto ui = device->GetUI();
+  ui->Print("Update via sdcard. Mounting sdcard\n");
 
-  if (is_ufs_dev()) {
-    if (do_sdcard_mount_for_ufs() != 0) {
-      LOG(ERROR) << "\nFailed to mount sdcard\n";
-      return INSTALL_ERROR;
-    }
-  } else {
-    if (ensure_path_mounted(SDCARD_ROOT) != 0) {
-      LOG(ERROR) << "\n-- Couldn't mount " << SDCARD_ROOT << ".\n";
-      return INSTALL_ERROR;
-    }
+  if (do_sdcard_mount() != 0) {
+    LOG(ERROR) << "\nFailed to mount sdcard\n";
+    return INSTALL_ERROR;
   }
 
   std::string path = BrowseDirectory(SDCARD_ROOT, device, ui);

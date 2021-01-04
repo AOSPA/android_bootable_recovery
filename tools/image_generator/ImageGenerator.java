@@ -113,14 +113,14 @@ public class ImageGenerator {
     private static final Map<String, String> LANGUAGE_TO_FONT_MAP =
             new TreeMap<String, String>() {
                 {
-                    put("am", "NotoSansEthiopic-Regular");
+                    put("am", "NotoSansEthiopic-VF");
                     put("ar", "NotoNaskhArabicUI-Regular");
                     put("as", "NotoSansBengaliUI-Regular");
                     put("bn", "NotoSansBengaliUI-Regular");
                     put("fa", "NotoNaskhArabicUI-Regular");
                     put("gu", "NotoSansGujaratiUI-Regular");
                     put("hi", "NotoSansDevanagariUI-Regular");
-                    put("hy", "NotoSansArmenian-Regular");
+                    put("hy", "NotoSansArmenian-VF");
                     put("iw", "NotoSansHebrew-Regular");
                     put("ja", "NotoSansCJK-Regular");
                     put("ka", "NotoSansGeorgian-VF");
