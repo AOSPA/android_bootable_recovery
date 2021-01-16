@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f7a4cef3_1b9727bf",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000427
+      },
+      "writtenOn": "2021-01-16T08:25:09Z",
+      "side": 1,
+      "message": "not a huge fan, shows no command when i go to sideload",
+      "revId": "6d9fb6df3dcc524efc4a94768c87ae70f5f8819d",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
