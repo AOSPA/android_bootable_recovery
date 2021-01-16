@@ -37,7 +37,7 @@ static std::vector<std::pair<std::string, Device::BuiltinAction>> g_menu_actions
   { "Wipe data/factory reset", Device::WIPE_DATA },
   { "Wipe cache partition", Device::WIPE_CACHE },
   { "Wipe system partition", Device::WIPE_SYSTEM },
-  { "Mount /system", Device::MOUNT_SYSTEM },
+  { "Mount/unmount system", Device::MOUNT_SYSTEM },
   { "View recovery logs", Device::VIEW_RECOVERY_LOGS },
   { "Enable ADB", Device::ENABLE_ADB },
   { "Run graphics test", Device::RUN_GRAPHICS_TEST },
