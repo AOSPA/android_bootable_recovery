@@ -16,6 +16,24 @@
       "message": "not a huge fan, shows no command when i go to sideload",
       "revId": "6d9fb6df3dcc524efc4a94768c87ae70f5f8819d",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "2c604672_7709022d",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000488
+      },
+      "writtenOn": "2021-01-16T10:02:49Z",
+      "side": 1,
+      "message": "hmm. Well those are the graphics, which can be changed/redesigned",
+      "parentUuid": "f7a4cef3_1b9727bf",
+      "revId": "6d9fb6df3dcc524efc4a94768c87ae70f5f8819d",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
