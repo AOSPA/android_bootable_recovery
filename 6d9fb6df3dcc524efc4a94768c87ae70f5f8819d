@@ -70,6 +70,23 @@
       "parentUuid": "e369f2dd_03d317d5",
       "revId": "6d9fb6df3dcc524efc4a94768c87ae70f5f8819d",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f05d9001_38505304",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000427
+      },
+      "writtenOn": "2021-01-18T04:36:50Z",
+      "side": 1,
+      "message": "recovery ui doesn\u0027t pop back up after sideload is complete",
+      "revId": "6d9fb6df3dcc524efc4a94768c87ae70f5f8819d",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
