@@ -162,29 +162,6 @@ static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& me
     return false;
   }
 
-  // Check for downgrade version.
-  int64_t build_timestamp =
-      android::base::GetIntProperty("ro.build.date.utc", std::numeric_limits<int64_t>::max());
-  int64_t pkg_post_timestamp = 0;
-  // We allow to full update to the same version we are running, in case there
-  // is a problem with the current copy of that version.
-  auto pkg_post_timestamp_string = get_value(metadata, "post-timestamp");
-  if (pkg_post_timestamp_string.empty() ||
-      !android::base::ParseInt(pkg_post_timestamp_string, &pkg_post_timestamp) ||
-      pkg_post_timestamp < build_timestamp) {
-    if (get_value(metadata, "ota-downgrade") != "yes") {
-      LOG(ERROR) << "Update package is older than the current build, expected a build "
-                    "newer than timestamp "
-                 << build_timestamp << " but package has timestamp " << pkg_post_timestamp
-                 << " and downgrade not allowed.";
-      return false;
-    }
-    if (pkg_pre_build_fingerprint.empty()) {
-      LOG(ERROR) << "Downgrade package must have a pre-build version set, not allowed.";
-      return false;
-    }
-  }
-
   return true;
 }
 
@@ -348,12 +325,6 @@ static InstallResult TryUpdateBinary(Package* package, bool* wipe_cache,
   bool ab_device_supports_nonab =
       android::base::GetBoolProperty("ro.virtual_ab.allow_non_ab", false);
   bool device_only_supports_ab = device_supports_ab && !ab_device_supports_nonab;
-
-  const auto current_spl = android::base::GetProperty("ro.build.version.security_patch", "");
-  if (ViolatesSPLDowngrade(zip, current_spl)) {
-    LOG(ERROR) << "Denying OTA because it's SPL downgrade";
-    return INSTALL_ERROR;
-  }
 
   if (package_is_ab) {
     CHECK(package->GetType() == PackageType::kFile);
