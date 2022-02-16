@@ -16,6 +16,24 @@
       "message": "we could just disable this altogether? I don\u0027t know any a-only maintainers who actually use aosp recovery, and a/b would be shipping aosp recovery anyways",
       "revId": "e9e3e6256ec2dddd92b200b2f96762164d9c67c8",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "c02e31be_12abcf3a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000463
+      },
+      "writtenOn": "2022-02-16T18:16:32Z",
+      "side": 1,
+      "message": "I\u0027m an A-Only maintainer who uses AOSP Recovery. :P",
+      "parentUuid": "b4f437a1_6c60eef2",
+      "revId": "e9e3e6256ec2dddd92b200b2f96762164d9c67c8",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
