@@ -34,6 +34,24 @@
       "parentUuid": "b4f437a1_6c60eef2",
       "revId": "e9e3e6256ec2dddd92b200b2f96762164d9c67c8",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "5dcb4a5c_46b788d7",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000760
+      },
+      "writtenOn": "2022-02-16T18:55:27Z",
+      "side": 1,
+      "message": "i am too, and we dont use aosp recovery. hence its just annoying when the recovery gets overridden for no absolute reasons.",
+      "parentUuid": "c02e31be_12abcf3a",
+      "revId": "e9e3e6256ec2dddd92b200b2f96762164d9c67c8",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
