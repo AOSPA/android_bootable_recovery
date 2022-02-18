@@ -52,6 +52,24 @@
       "parentUuid": "c02e31be_12abcf3a",
       "revId": "e9e3e6256ec2dddd92b200b2f96762164d9c67c8",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "dbef9ebb_6815b216",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2022-02-18T11:13:27Z",
+      "side": 1,
+      "message": "test it with it just disabled, we don\u0027t need it to be configurable",
+      "parentUuid": "5dcb4a5c_46b788d7",
+      "revId": "e9e3e6256ec2dddd92b200b2f96762164d9c67c8",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
