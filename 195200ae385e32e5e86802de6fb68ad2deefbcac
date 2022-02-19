@@ -33,6 +33,24 @@
       "message": "is a-only the only type affected here? do we want our paranoid recovery to be forced for OTAs?",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "7aef2033_d8f9e472",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000760
+      },
+      "writtenOn": "2022-02-19T09:45:36Z",
+      "side": 1,
+      "message": "no dont force it.. we use custom recoveries which just gets annoying when is replaced everytime we flash.. and yea its an a-only thing.. this change was there in ruby anyways",
+      "parentUuid": "57ffb59f_923a6138",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
