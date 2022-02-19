@@ -16,6 +16,23 @@
       "message": "alright, its tested and i pushed it",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "57ffb59f_923a6138",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000012
+      },
+      "writtenOn": "2022-02-19T07:36:43Z",
+      "side": 1,
+      "message": "is a-only the only type affected here? do we want our paranoid recovery to be forced for OTAs?",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
