@@ -51,6 +51,24 @@
       "parentUuid": "57ffb59f_923a6138",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "5c57e8a6_6580882e",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000012
+      },
+      "writtenOn": "2022-02-19T15:00:29Z",
+      "side": 1,
+      "message": "sure but it also gets annoying when OTAs don\u0027t work because a user is on a recovery based on ICS. anyway this is fine for now.",
+      "parentUuid": "7aef2033_d8f9e472",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
