@@ -87,6 +87,24 @@
       "parentUuid": "5c57e8a6_6580882e",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "60de7f9e_a2610f2a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000463
+      },
+      "writtenOn": "2022-02-20T12:29:02Z",
+      "side": 1,
+      "message": "You can\u0027t base all our info in a legacy device behavior.\nPoco F2 Pro and newer devices (usually with Dynanic Partiotions) don\u0027t work well with TWRP, even being A-Only.\nI\u0027m against this change, PA Recovery should be shiped even for A-Only devices.",
+      "parentUuid": "8b283ccc_0fdf1b37",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
