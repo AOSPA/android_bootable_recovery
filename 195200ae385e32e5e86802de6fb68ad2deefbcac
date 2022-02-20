@@ -69,6 +69,24 @@
       "parentUuid": "7aef2033_d8f9e472",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "8b283ccc_0fdf1b37",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000760
+      },
+      "writtenOn": "2022-02-20T10:44:16Z",
+      "side": 1,
+      "message": "custom recoveries are also flashing the OTAs fine.. for example PE on our device.. its official and it flashes OTA via TWRP.. i have also applied for AOSPA and vishal did review my trees and said that i am in.. so i shall be able to check it myself once my device gets merged",
+      "parentUuid": "5c57e8a6_6580882e",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
