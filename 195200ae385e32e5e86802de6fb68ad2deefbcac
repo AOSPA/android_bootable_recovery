@@ -123,6 +123,24 @@
       "parentUuid": "60de7f9e_a2610f2a",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "21aebe45_7bf42e9b",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2022-02-21T17:14:33Z",
+      "side": 1,
+      "message": "the optional prop makes no sense for now because we don\u0027t have a functioning updater\nunless you keep it enabled by default, its a stopship",
+      "parentUuid": "d074809b_2a2ea1a4",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
