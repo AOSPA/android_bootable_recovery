@@ -141,6 +141,24 @@
       "parentUuid": "d074809b_2a2ea1a4",
       "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "4c8572c1_3218e313",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000463
+      },
+      "writtenOn": "2022-02-21T17:34:53Z",
+      "side": 1,
+      "message": "So let\u0027s make it optional, but keeping it enabled by default, so people can opt out to don\u0027t override recovery. \nWe don\u0027t have a functioning updater yet, but we should have one in the future.",
+      "parentUuid": "21aebe45_7bf42e9b",
+      "revId": "195200ae385e32e5e86802de6fb68ad2deefbcac",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
