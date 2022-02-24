@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "c708ad33_2f3a091a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000012
+      },
+      "writtenOn": "2022-02-24T14:07:50Z",
+      "side": 1,
+      "message": "semi related, might be nice to have an option to browse the storage instead of only being able to flash update.zip",
+      "revId": "48861a2ea7e8c000cd4c6de787d06db38fdcb9f3",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
