@@ -466,6 +466,9 @@ int main(int argc, char** argv) {
   std::thread listener_thread(ListenRecoverySocket, ui, std::ref(action));
   listener_thread.detach();
 
+  // Enable root before starting ADB.
+  android::base::SetProperty("service.adb.root", "1");
+
   while (true) {
     // We start adbd in recovery for the device with userdebug build or a unlocked bootloader.
     std::string usb_config =
