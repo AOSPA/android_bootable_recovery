@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "a5f28650_573cf4af",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2022-06-29T14:29:10Z",
+      "side": 1,
+      "message": "20980: recovery: install: Skip signature verification | https://gerrit.aospa.co/c/AOSPA/android_bootable_recovery/+/20980 dupe",
+      "revId": "ec532e53b2cf7f63ea7cabab0c241ce3bcabfe17",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
