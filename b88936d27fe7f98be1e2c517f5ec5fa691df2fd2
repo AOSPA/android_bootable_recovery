@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2dbf996d_84031529",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2022-07-07T06:03:04Z",
+      "side": 1,
+      "message": "service vendor_flash_recovery /vendor/bin/install-recovery.sh\n    override\n    class main\n    oneshot\n    disabled\n\nlike so",
+      "revId": "b88936d27fe7f98be1e2c517f5ec5fa691df2fd2",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
