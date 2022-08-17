@@ -56,6 +56,7 @@
 #include <android-base/macros.h>
 #include <android-base/stringprintf.h>
 #include <android-base/unique_fd.h>
+#include <android-base/properties.h>
 #include <string>
 #include <drm_fourcc.h>
 #include <xf86drm.h>
@@ -189,6 +190,45 @@ static int atomic_add_prop_to_plane(Plane *plane_res, drmModeAtomicReq *req,
   return 0;
 }
 
+static int SetupSprBlob(int fd, uint32_t* blob_id) {
+  SPRPackType pack_type = SPRPackType::kPentile;
+  SPRFilterType filter_type = SPRFilterType::kFourTap;
+  SPRAdaptiveModeType adpative_mode = SPRAdaptiveModeType::kYYGM;
+
+  drm_msm_spr_init_cfg spr_init_cfg;
+  spr_init_cfg.cfg0 = 1;
+  spr_init_cfg.cfg1 = 1;
+  spr_init_cfg.cfg2 = 1;
+  spr_init_cfg.cfg3 = 0;
+  spr_init_cfg.flags = 0;
+  spr_init_cfg.cfg4 = (pack_type == SPRPackType::kRGBW);
+  spr_init_cfg.cfg5 = DefaultColorPhaseIncrement.at(pack_type);
+  spr_init_cfg.cfg6 = DefaultColorPhaseRepeat.at(pack_type);
+  spr_init_cfg.cfg7 = static_cast<uint16_t>(filter_type);
+  spr_init_cfg.cfg8 = static_cast<uint16_t>(adpative_mode);
+  if (pack_type == SPRPackType::kRGBW) {
+    spr_init_cfg.cfg9 = 512;
+    std::copy(DefaultRGBWGains.begin(), DefaultRGBWGains.end(), spr_init_cfg.cfg11);
+  }
+  spr_init_cfg.cfg10 = 0;
+  std::copy(DecimationRatioMap.at(pack_type).begin(), DecimationRatioMap.at(pack_type).end(),
+            spr_init_cfg.cfg11);
+  std::copy(DefaultOPRGains.begin(), DefaultOPRGains.end(), spr_init_cfg.cfg13);
+  std::copy(DefaultAdaptiveStrengths.begin(), DefaultAdaptiveStrengths.end(), spr_init_cfg.cfg14);
+  std::copy(DefaultOPROffsets.begin(), DefaultOPROffsets.end(), spr_init_cfg.cfg15);
+  std::copy(DefaultFilterCoeffsMap.at(filter_type).begin(),
+            DefaultFilterCoeffsMap.at(filter_type).end(), spr_init_cfg.cfg16);
+  std::copy(DefaultColorPhaseMap.at(pack_type).begin(), DefaultColorPhaseMap.at(pack_type).end(),
+            spr_init_cfg.cfg17);
+
+  if (drmModeCreatePropertyBlob(fd, &spr_init_cfg, sizeof(drm_msm_spr_init_cfg), blob_id)) {
+    printf("failed to create spr blob\n");
+    return -EINVAL;
+  }
+
+  return 0;
+}
+
 int MinuiBackendDrm::AtomicPopulatePlane(int plane, drmModeAtomicReqPtr atomic_req) {
   uint32_t src_x, src_y, src_w, src_h;
   uint32_t crtc_x, crtc_y, crtc_w, crtc_h;
@@ -265,6 +305,9 @@ int MinuiBackendDrm::TeardownPipeline(drmModeAtomicReqPtr atomic_req) {
   add_prop(&conn_res, connector, Connector, main_monitor_connector->connector_id, "CRTC_ID", 0);
   add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "MODE_ID", 0);
   add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "ACTIVE", 0);
+  if (spr_enabled) {
+    add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "SDE_SPR_INIT_CFG_V1", 0);
+  }
 
   for(i = 0; i < number_of_lms; i++) {
     ret = atomic_add_prop_to_plane(plane_res, atomic_req,
@@ -292,6 +335,10 @@ int MinuiBackendDrm::SetupPipeline(drmModeAtomicReqPtr atomic_req) {
          "CRTC_ID", main_monitor_crtc->crtc_id);
     add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "MODE_ID", crtc_res.mode_blob_id);
     add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "ACTIVE", 1);
+    if (spr_enabled) {
+      add_prop(&crtc_res, crtc, Crtc, main_monitor_crtc->crtc_id, "SDE_SPR_INIT_CFG_V1",
+              crtc_res.spr_blob_id);
+    }
   }
 
   /* Setup planes */
@@ -609,6 +656,7 @@ GRSurface* MinuiBackendDrm::Init() {
   drmModeRes* res = nullptr;
   drm_fd = -1;
 
+  spr_enabled = android::base::GetIntProperty("vendor.display.enable_spr", 0);
   number_of_lms = DEFAULT_NUM_LMS;
   /* Consider DRM devices in order. */
   for (int i = 0; i < DRM_MAX_MINOR; i++) {
@@ -754,6 +802,13 @@ GRSurface* MinuiBackendDrm::Init() {
 
   drmModeFreePlaneResources(plane_options);
   plane_options = NULL;
+
+  /* Setup spr blob if enabled */
+  if (spr_enabled) {
+    if (SetupSprBlob(drm_fd, &crtc_res.spr_blob_id)) {
+      return NULL;
+    }
+  }
 
   /* Setup pipe and blob_id */
   if (drmModeCreatePropertyBlob(drm_fd, &main_monitor_crtc->mode, sizeof(drmModeModeInfo),

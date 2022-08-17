@@ -20,6 +20,8 @@
 #include <stdint.h>
 
 #include <memory>
+#include <map>
+#include <array>
 
 #include <xf86drmMode.h>
 
@@ -30,10 +32,93 @@
 #define NUM_PLANES 4
 #define DEFAULT_NUM_LMS 2
 
+#define SPR_INIT_PARAM_SIZE_1 4
+#define SPR_INIT_PARAM_SIZE_2 5
+#define SPR_INIT_PARAM_SIZE_3 16
+#define SPR_INIT_PARAM_SIZE_4 24
+#define SPR_INIT_PARAM_SIZE_5 32
+
+enum class SPRPackType {
+  kPentile,
+  kRGBW,
+  kYYGW,
+  kYYGM,
+  kDelta3,
+  kMax = 0xFF,
+};
+
+enum class SPRFilterType {
+  kPixelDrop,
+  kBilinear,
+  kFourTap,
+  kAdaptive,
+  kMax = 0xFF,
+};
+
+enum class SPRAdaptiveModeType {
+  kYYGM,
+  kYYGW,
+  kMax = 0xFF,
+};
+
+static const std::map<SPRPackType, uint32_t> DefaultColorPhaseIncrement = {
+  { { { SPRPackType::kPentile }, { 8 } },
+    { { SPRPackType::kYYGM }, { 6 } },
+    { { SPRPackType::kYYGW }, { 6 } },
+    { { SPRPackType::kDelta3 }, { 6 } },
+    { { SPRPackType::kRGBW }, { 8 } } }
+};
+static const std::map<SPRPackType, uint32_t> DefaultColorPhaseRepeat = {
+  { { { SPRPackType::kPentile }, { 2 } },
+    { { SPRPackType::kYYGM }, { 2 } },
+    { { SPRPackType::kYYGW }, { 2 } },
+    { { SPRPackType::kDelta3 }, { 2 } },
+    { { SPRPackType::kRGBW }, { 2 } } }
+};
+static const std::map<SPRPackType, std::array<uint16_t, SPR_INIT_PARAM_SIZE_1>> DecimationRatioMap{
+  {
+      { { SPRPackType::kPentile }, { 1, 0, 1, 0 } },
+      { { SPRPackType::kYYGM }, { 2, 2, 2, 0 } },
+      { { SPRPackType::kYYGW }, { 2, 2, 2, 0 } },
+      { { SPRPackType::kRGBW }, { 1, 1, 1, 1 } },
+  }
+};
+static const std::map<SPRFilterType, std::array<int16_t, SPR_INIT_PARAM_SIZE_3>>
+    DefaultFilterCoeffsMap{
+      { { { SPRFilterType::kPixelDrop }, { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
+        { { SPRFilterType::kBilinear },
+          { 0, 512, 0, 0, -33, 443, 110, -8, -23, 279, 279, -23, -8, 110, 443, -33 } },
+        { { SPRFilterType::kFourTap },
+          { 128, 256, 128, 0, 86, 241, 164, 21, 52, 204, 204, 52, 21, 164, 241, 86 } },
+        { { SPRFilterType::kAdaptive },
+          { 0, 256, 256, 0, 0, 256, 256, 0, 0, 256, 256, 0, 0, 256, 256, 0 } } }
+    };
+static const std::map<SPRPackType, std::array<int16_t, SPR_INIT_PARAM_SIZE_4>>
+    DefaultColorPhaseMap{
+      { { { SPRPackType::kPentile },
+          { -2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, -2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
+        { { SPRPackType::kYYGM },
+          { -3, 0, 0, 0, 0, 0, -1, 2, 1, 1, 0, 0, 1, -2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 } },
+        { { SPRPackType::kYYGW },
+          { -4, 2, 0, 0, 0, -1, 2, 2, 0, -1, -1, -1, 2, 2, -1, -1, -1, 2, 0, 0, 0, 0, 0, 0 } },
+        { { SPRPackType::kDelta3 },
+          { -3, 0, 0, 0, 0, 0, 0, -3, 0, 0, 0, 0, -3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
+        { { SPRPackType::kRGBW },
+          { -4, 0, 0, 0, 0, 0, -2, 2, 0, 0, 0, 0, 0, -4, 0, 0, 0, 0, 2, -2, 0, 0, 0, 0 } } }
+    };
+static const std::array<uint16_t, SPR_INIT_PARAM_SIZE_1> DefaultRGBWGains = { 1024, 1024, 1024, 341 };
+static const std::array<uint16_t, SPR_INIT_PARAM_SIZE_1> DefaultOPRGains = { 341, 341, 341, 0 };
+static const std::array<uint16_t, SPR_INIT_PARAM_SIZE_2> DefaultAdaptiveStrengths = { 0, 4, 8, 12, 16 };
+static const std::array<uint16_t, SPR_INIT_PARAM_SIZE_5> DefaultOPROffsets = {
+  0,    132,  264,  396,  529,  661,  793,  925,  1057, 1189, 1321, 1453, 1586, 1718, 1850, 1982,
+  2114, 2246, 2378, 2510, 2643, 2775, 2907, 3039, 3171, 3303, 3435, 3567, 3700, 3832, 3964, 4095
+};
+
 struct Crtc {
   drmModeObjectProperties *props;
   drmModePropertyRes **props_info;
   uint32_t mode_blob_id;
+  uint32_t spr_blob_id;
 };
 
 struct Connector {
@@ -45,6 +130,28 @@ struct Plane {
   drmModePlane *plane;
   drmModeObjectProperties *props;
   drmModePropertyRes ** props_info;
+};
+
+struct drm_msm_spr_init_cfg {
+  __u64 flags;
+  __u16 cfg0;
+  __u16 cfg1;
+  __u16 cfg2;
+  __u16 cfg3;
+  __u16 cfg4;
+  __u16 cfg5;
+  __u16 cfg6;
+  __u16 cfg7;
+  __u16 cfg8;
+  __u16 cfg9;
+  __u32 cfg10;
+  __u16 cfg11[SPR_INIT_PARAM_SIZE_1];
+  __u16 cfg12[SPR_INIT_PARAM_SIZE_1];
+  __u16 cfg13[SPR_INIT_PARAM_SIZE_1];
+  __u16 cfg14[SPR_INIT_PARAM_SIZE_2];
+  __u16 cfg15[SPR_INIT_PARAM_SIZE_5];
+  int cfg16[SPR_INIT_PARAM_SIZE_3];
+  int cfg17[SPR_INIT_PARAM_SIZE_4];
 };
 
 class GRSurfaceDrm : public GRSurface {
@@ -102,4 +209,5 @@ class MinuiBackendDrm : public MinuiBackend {
   struct Connector conn_res;
   struct Plane plane_res[NUM_PLANES];
   uint32_t number_of_lms;
+  uint32_t spr_enabled;
 };
