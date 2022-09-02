@@ -52,24 +52,20 @@
 #include <future>
 #include <thread>
 
+#include <BootControlClient.h>
+#include <android-base/chrono_utils.h>
 #include <android-base/file.h>
 #include <android-base/logging.h>
 #include <android-base/parseint.h>
 #include <android-base/properties.h>
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
-#include <android/hardware/boot/1.0/IBootControl.h>
 #include <android/os/IVold.h>
 #include <binder/BinderService.h>
 #include <binder/Status.h>
 #include <cutils/android_reboot.h>
 
 #include "care_map.pb.h"
-
-using android::sp;
-using android::hardware::boot::V1_0::IBootControl;
-using android::hardware::boot::V1_0::BoolResult;
-using android::hardware::boot::V1_0::CommandResult;
 
 // TODO(xunchang) remove the prefix and use a default path instead.
 constexpr const char* kDefaultCareMapPrefix = "/data/ota_package/care_map";
@@ -91,7 +87,7 @@ UpdateVerifier::UpdateVerifier()
 // partition's integrity.
 std::map<std::string, std::string> UpdateVerifier::FindDmPartitions() {
   static constexpr auto DM_PATH_PREFIX = "/sys/block/";
-  dirent** namelist;
+  dirent** namelist = nullptr;
   int n = scandir(DM_PATH_PREFIX, &namelist, dm_name_filter, alphasort);
   if (n == -1) {
     PLOG(ERROR) << "Failed to scan dir " << DM_PATH_PREFIX;
@@ -188,7 +184,28 @@ bool UpdateVerifier::ReadBlocks(const std::string partition_name,
   return ret;
 }
 
+bool UpdateVerifier::CheckVerificationStatus() {
+  auto client =
+      android::snapshot::SnapuserdClient::Connect(android::snapshot::kSnapuserdSocket, 5s);
+  if (!client) {
+    LOG(ERROR) << "Unable to connect to snapuserd";
+    return false;
+  }
+
+  return client->QueryUpdateVerification();
+}
+
 bool UpdateVerifier::VerifyPartitions() {
+  const bool userspace_snapshots =
+      android::base::GetBoolProperty("ro.virtual_ab.userspace.snapshots.enabled", false);
+
+  if (userspace_snapshots && CheckVerificationStatus()) {
+    LOG(INFO) << "Partitions verified by snapuserd daemon";
+    return true;
+  }
+
+  LOG(INFO) << "Partitions not verified by snapuserd daemon";
+
   auto dm_block_devices = FindDmPartitions();
   if (dm_block_devices.empty()) {
     LOG(ERROR) << "No dm-enabled block device is found.";
@@ -307,18 +324,21 @@ int update_verifier(int argc, char** argv) {
     LOG(INFO) << "Started with arg " << i << ": " << argv[i];
   }
 
-  sp<IBootControl> module = IBootControl::getService();
+  const auto module = android::hal::BootControlClient::WaitForService();
   if (module == nullptr) {
     LOG(ERROR) << "Error getting bootctrl module.";
     return reboot_device();
   }
 
-  uint32_t current_slot = module->getCurrentSlot();
-  BoolResult is_successful = module->isSlotMarkedSuccessful(current_slot);
-  LOG(INFO) << "Booting slot " << current_slot << ": isSlotMarkedSuccessful="
-            << static_cast<int32_t>(is_successful);
-
-  if (is_successful == BoolResult::FALSE) {
+  uint32_t current_slot = module->GetCurrentSlot();
+  const auto is_successful = module->IsSlotMarkedSuccessful(current_slot);
+  if (!is_successful.has_value()) {
+    LOG(INFO) << "Booting slot " << current_slot << " failed";
+  } else {
+    LOG(INFO) << "Booting slot " << current_slot
+              << ": isSlotMarkedSuccessful=" << is_successful.value();
+  }
+  if (is_successful.has_value() && !is_successful.value()) {
     // The current slot has not booted successfully.
 
     bool skip_verification = false;
@@ -364,8 +384,7 @@ int update_verifier(int argc, char** argv) {
     }
 
     if (!supports_checkpoint) {
-      CommandResult cr;
-      module->markBootSuccessful([&cr](CommandResult result) { cr = result; });
+      const auto cr = module->MarkBootSuccessful();
       if (!cr.success) {
         LOG(ERROR) << "Error marking booted successfully: " << cr.errMsg;
         return reboot_device();
