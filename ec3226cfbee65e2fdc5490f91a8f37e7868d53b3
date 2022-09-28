@@ -16,6 +16,24 @@
       "message": "are you seeing this issue?",
       "revId": "ec3226cfbee65e2fdc5490f91a8f37e7868d53b3",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "93215bbd_5308be58",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000706
+      },
+      "writtenOn": "2022-09-28T22:25:33Z",
+      "side": 1,
+      "message": "Yes, my display stays on while offline charging without this. Can anyone else check?",
+      "parentUuid": "46c283c5_0cacce52",
+      "revId": "ec3226cfbee65e2fdc5490f91a8f37e7868d53b3",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
