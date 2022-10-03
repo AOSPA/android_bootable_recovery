@@ -166,6 +166,7 @@ static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& me
   }
 
   // Check for downgrade version.
+  /*
   int64_t build_timestamp =
       android::base::GetIntProperty("ro.build.date.utc", std::numeric_limits<int64_t>::max());
   int64_t pkg_post_timestamp = 0;
@@ -187,6 +188,7 @@ static bool CheckAbSpecificMetadata(const std::map<std::string, std::string>& me
       return false;
     }
   }
+  */
 
   return true;
 }
