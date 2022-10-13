@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "43687107_38b784da",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000551
+      },
+      "writtenOn": "2022-10-13T17:52:40Z",
+      "side": 1,
+      "message": "User reported flash error via signed otapackage on AOSPA recovery. \nThis hasn\u0027t been tested, but in theory does fix the issue.\nThe issue is purely cosmetic and despite the error, boots into system successfully.",
+      "revId": "1f291db1f42c68f3d0e4dc8673e5d4bd1f0afab6",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
