@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "0afffec4_a4d1b95e",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000427
+      },
+      "writtenOn": "2022-10-22T14:02:12Z",
+      "side": 1,
+      "message": "would suggest pushing this to aosp as well",
+      "revId": "c50b5f915f885a64f7399e6f27441cd19d8f5cb2",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
