@@ -77,6 +77,8 @@ static constexpr const char* CACHE_ROOT = "/cache";
 #define SDCARD_BLK_0_PATH "/dev/block/mmcblk0p1"
 #define MMC_1_TYPE_PATH "/sys/block/mmcblk1/device/type"
 #define SDCARD_BLK_1_PATH "/dev/block/mmcblk1p1"
+#define SDEXPRESS_0_TYPE_PATH "/sys/block/nvme0n1/device/transport"
+#define SDEXPRESS_BLK_0_PATH "/dev/block/nvme0n1p1"
 
 static bool save_current_log = false;
 
@@ -331,7 +333,7 @@ static int check_mmc_is_sdcard (const char* mmc_type_path)
     return -1;
   }
   LOG(INFO) << "MMC type is : " << mmc_type.c_str();
-  if (!strncmp(mmc_type.c_str(), "SD", strlen("SD")))
+  if (!strncmp(mmc_type.c_str(), "SD", strlen("SD")) || !strncmp(mmc_type.c_str(), "pcie", strlen("pcie")))
     return 0;
   else
     return -1;
@@ -348,7 +350,7 @@ static int do_sdcard_mount(RecoveryUI* ui)
           ui->Print("Unknown volume for /sdcard. Check fstab\n");
           goto error;
   }
-  if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
+  if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat")) && strncmp(v->fs_type.c_str(), "exfat", sizeof("exfat"))) {
           ui->Print("Unsupported format on the sdcard: %s\n",
                           v->fs_type.c_str());
           goto error;
@@ -365,6 +367,14 @@ static int do_sdcard_mount(RecoveryUI* ui)
   else if (check_mmc_is_sdcard(MMC_1_TYPE_PATH) == 0) {
     LOG(INFO) << "Mounting sdcard on " << SDCARD_BLK_1_PATH;
     rc = mount(SDCARD_BLK_1_PATH,
+               v->mount_point.c_str(),
+               v->fs_type.c_str(),
+               v->flags,
+               v->fs_options.c_str());
+  }
+  else if (check_mmc_is_sdcard(SDEXPRESS_0_TYPE_PATH) == 0) {
+    LOG(INFO) << "Mounting sdexpress on " << SDEXPRESS_BLK_0_PATH;
+    rc = mount(SDEXPRESS_BLK_0_PATH,
                v->mount_point.c_str(),
                v->fs_type.c_str(),
                v->flags,
