@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "36e118df_974d2a27",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000012
+      },
+      "writtenOn": "2022-12-03T06:34:16Z",
+      "side": 1,
+      "message": "not sure about this, if SPL is lower, it won\u0027t boot.",
+      "revId": "cfd67bc9258a704eb47fccfa0fe7a9cd7bc97850",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
