@@ -809,7 +809,6 @@ Device::BuiltinAction start_recovery(Device* device, const std::vector<std::stri
     if (android::base::StartsWith(slot, "_")) slot.erase(0, 1);
     title_lines.push_back("Active slot: " + slot);
   }
-  title_lines.insert(std::begin(title_lines), "AOSPA Recovery");
   ui->SetTitle(title_lines);
 
   ui->ResetKeyInterruptStatus();
