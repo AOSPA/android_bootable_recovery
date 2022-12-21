@@ -715,19 +715,17 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
     const std::vector<std::string>& help_message) {
   int y = margin_height_;
 
-  if (fastbootd_logo_ && fastbootd_logo_enabled_) {
-    // Try to get this centered on screen.
-    auto width = gr_get_width(fastbootd_logo_.get());
-    auto height = gr_get_height(fastbootd_logo_.get());
-    auto centered_x = ScreenWidth() / 2 - width / 2;
-    DrawSurface(fastbootd_logo_.get(), 0, 0, width, height, centered_x, y);
-    y += height;
-  }
-
   if (menu_) {
     int x = margin_width_ + kMenuIndent;
 
     SetColor(UIElement::INFO);
+
+    auto& logo = fastbootd_logo_enabled_ ? fastbootd_logo_ : recovery_logo_;
+    auto width = gr_get_width(logo.get());
+    auto height = gr_get_height(logo.get());
+    auto centered_x = ScreenWidth() / 2 - width / 2;
+    DrawSurface(logo.get(), 0, 0, width, height, centered_x, y);
+    y += height;
 
     for (size_t i = 0; i < title_lines_.size(); i++) {
       y += DrawTextLine(x, y, title_lines_[i], i == 0);
@@ -941,6 +939,8 @@ bool ScreenRecoveryUI::Init(const std::string& locale) {
   erasing_text_ = LoadLocalizedBitmap("erasing_text");
   no_command_text_ = LoadLocalizedBitmap("no_command_text");
   error_text_ = LoadLocalizedBitmap("error_text");
+
+  recovery_logo_ = LoadBitmap("recovery");
 
   if (android::base::GetBoolProperty("ro.boot.dynamic_partitions", false)) {
     fastbootd_logo_ = LoadBitmap("fastbootd");
