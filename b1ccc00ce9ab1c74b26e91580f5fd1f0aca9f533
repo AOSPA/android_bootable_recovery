@@ -16,6 +16,24 @@
       "message": "Is this still what we want?",
       "revId": "b1ccc00ce9ab1c74b26e91580f5fd1f0aca9f533",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "ab0c6cf5_e313df50",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2022-12-21T11:43:50Z",
+      "side": 1,
+      "message": "I still think a-only devices hould be able to override the service in tree, the recent ones like lmi need to ship our recovery",
+      "parentUuid": "aa678539_903213d3",
+      "revId": "b1ccc00ce9ab1c74b26e91580f5fd1f0aca9f533",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
