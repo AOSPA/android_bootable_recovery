@@ -16,6 +16,24 @@
       "message": "when would you need this?",
       "revId": "4f8b123e7ae84d3c63b5c5bf2c45fb60947f4e0f",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2f5209dd_0ba07c4a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2022-12-21T11:44:19Z",
+      "side": 1,
+      "message": "I see no point except its free real estate",
+      "parentUuid": "dd030cea_2be86d6f",
+      "revId": "4f8b123e7ae84d3c63b5c5bf2c45fb60947f4e0f",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
