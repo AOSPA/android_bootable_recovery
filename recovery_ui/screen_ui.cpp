@@ -725,7 +725,7 @@ void ScreenRecoveryUI::draw_menu_and_text_buffer_locked(
     auto height = gr_get_height(logo.get());
     auto centered_x = ScreenWidth() / 2 - width / 2;
     DrawSurface(logo.get(), 0, 0, width, height, centered_x, y);
-    y += height;
+    y += height + (height / 2);
 
     for (size_t i = 0; i < title_lines_.size(); i++) {
       y += DrawTextLine(x, y, title_lines_[i], i == 0);
