@@ -501,20 +501,20 @@ void ScreenRecoveryUI::draw_foreground_locked() {
 void ScreenRecoveryUI::SetColor(UIElement e) const {
   switch (e) {
     case UIElement::INFO:
-      gr_color(249, 194, 0, 255);
+      gr_color(83, 255, 0, 255);
       break;
     case UIElement::HEADER:
-      gr_color(247, 0, 6, 255);
+      gr_color(83, 255, 0, 255);
       break;
     case UIElement::MENU:
-    case UIElement::MENU_SEL_BG:
-      gr_color(0, 106, 157, 255);
-      break;
-    case UIElement::MENU_SEL_BG_ACTIVE:
-      gr_color(0, 156, 100, 255);
-      break;
     case UIElement::MENU_SEL_FG:
       gr_color(255, 255, 255, 255);
+      break;
+    case UIElement::MENU_SEL_BG:
+      gr_color(90, 90, 90, 255);
+      break;
+    case UIElement::MENU_SEL_BG_ACTIVE:
+      gr_color(83, 255, 0, 255);
       break;
     case UIElement::LOG:
       gr_color(196, 196, 196, 255);
