@@ -45,6 +45,8 @@
 #define SDCARD_BLK_0_PATH "/dev/block/mmcblk0p1"
 #define MMC_1_TYPE_PATH "/sys/block/mmcblk1/device/type"
 #define SDCARD_BLK_1_PATH "/dev/block/mmcblk1p1"
+#define SDEXPRESS_0_TYPE_PATH "/sys/block/nvme0n1/device/transport"
+#define SDEXPRESS_BLK_0_PATH "/dev/block/nvme0n1p1"
 
 static constexpr const char* SDCARD_ROOT = "/sdcard";
 // How long (in seconds) we wait for the fuse-provided package file to
@@ -225,7 +227,7 @@ static int check_mmc_is_sdcard (const char* mmc_type_path)
     return -1;
   }
   LOG(INFO) << "MMC type is : " << mmc_type.c_str();
-  if (!strncmp(mmc_type.c_str(), "SD", strlen("SD")))
+  if (!strncmp(mmc_type.c_str(), "SD", strlen("SD")) || !strncmp(mmc_type.c_str(), "pcie", strlen("pcie")))
     return 0;
   else
     return -1;
@@ -241,7 +243,7 @@ static int do_sdcard_mount() {
     LOG(ERROR) << "Unknown volume for /sdcard. Check fstab\n";
     goto error;
   }
-  if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat"))) {
+  if (strncmp(v->fs_type.c_str(), "vfat", sizeof("vfat")) && strncmp(v->fs_type.c_str(), "exfat", sizeof("exfat"))) {
     LOG(ERROR) << "Unsupported format on the sdcard: "
                << v->fs_type.c_str() << "\n";
     goto error;
@@ -258,6 +260,14 @@ static int do_sdcard_mount() {
   else if (check_mmc_is_sdcard(MMC_1_TYPE_PATH) == 0) {
     LOG(INFO) << "Mounting sdcard on " << SDCARD_BLK_1_PATH;
     rc = mount(SDCARD_BLK_1_PATH,
+               v->mount_point.c_str(),
+               v->fs_type.c_str(),
+               v->flags,
+               v->fs_options.c_str());
+  }
+  else if (check_mmc_is_sdcard(SDEXPRESS_0_TYPE_PATH) == 0) {
+    LOG(INFO) << "Mounting sdexpress on " << SDEXPRESS_BLK_0_PATH;
+    rc = mount(SDEXPRESS_BLK_0_PATH,
                v->mount_point.c_str(),
                v->fs_type.c_str(),
                v->flags,
