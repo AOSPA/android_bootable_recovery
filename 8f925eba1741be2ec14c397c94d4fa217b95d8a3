@@ -16,6 +16,23 @@
       "message": "don\u0027t think this should be merged.",
       "revId": "8f925eba1741be2ec14c397c94d4fa217b95d8a3",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "46735d90_9f19ce90",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000488
+      },
+      "writtenOn": "2023-03-26T09:19:24Z",
+      "side": 1,
+      "message": "rather make it a prompt to continue installation if the signature is not verified.",
+      "revId": "8f925eba1741be2ec14c397c94d4fa217b95d8a3",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
