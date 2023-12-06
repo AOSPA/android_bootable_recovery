@@ -88,6 +88,23 @@
       "parentUuid": "9c3f639d_7faf9718",
       "revId": "e7d83184703fe7b67ea19c85c0764d4dcebe137b",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "477b737a_882e6494",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000092
+      },
+      "writtenOn": "2023-12-06T02:00:32Z",
+      "side": 1,
+      "message": "oh no, it seems like we are using aosp recovery source instead of clo",
+      "revId": "e7d83184703fe7b67ea19c85c0764d4dcebe137b",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
