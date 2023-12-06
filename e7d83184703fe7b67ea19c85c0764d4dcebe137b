@@ -16,6 +16,24 @@
       "message": "why?",
       "revId": "e7d83184703fe7b67ea19c85c0764d4dcebe137b",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "9e7db65e_7c318a60",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000092
+      },
+      "writtenOn": "2023-12-06T01:48:03Z",
+      "side": 1,
+      "message": "fixed recovery ui on xiaomi pad 6 (maybe more)\nhttps://imgur.com/4OAXUNn",
+      "parentUuid": "61a9c9f5_948d64ed",
+      "revId": "e7d83184703fe7b67ea19c85c0764d4dcebe137b",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
