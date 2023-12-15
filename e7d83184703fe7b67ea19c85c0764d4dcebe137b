@@ -105,6 +105,23 @@
       "message": "oh no, it seems like we are using aosp recovery source instead of clo",
       "revId": "e7d83184703fe7b67ea19c85c0764d4dcebe137b",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "3fed1ae4_796a6318",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000143
+      },
+      "writtenOn": "2023-12-15T08:06:44Z",
+      "side": 1,
+      "message": "needed on my xiaomi pad 6 pro, has no impact on my mi 13 which also works without this patch",
+      "revId": "e7d83184703fe7b67ea19c85c0764d4dcebe137b",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
