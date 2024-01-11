@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "3b65ede7_6b127fb9",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 5
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000012
+      },
+      "writtenOn": "2024-01-11T08:12:28Z",
+      "side": 1,
+      "message": "why? how many symbols do we need to support here?  one seems fine...",
+      "revId": "cdf0b01a9b1e63d49fadc6ab77bd453e859a1be0",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
