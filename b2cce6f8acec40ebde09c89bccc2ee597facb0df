@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "0c914e73_524c7e0a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000890
+      },
+      "writtenOn": "2024-01-28T18:26:43Z",
+      "side": 1,
+      "message": "Does it cancel sideload cleanly with this or nah",
+      "revId": "b2cce6f8acec40ebde09c89bccc2ee597facb0df",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
