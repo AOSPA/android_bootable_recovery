@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "74d06378_e3419070",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000012
+      },
+      "writtenOn": "2024-01-28T15:23:56Z",
+      "side": 1,
+      "message": "what is the behavior without this change?  if I wipe uvite, does it mean I still can\u0027t flash topaz (with an earlier SPL) in recovery?",
+      "revId": "6acec00d36cada75169e1532358d3ff5c6b4902a",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
