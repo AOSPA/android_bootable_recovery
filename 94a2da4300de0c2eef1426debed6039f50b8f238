@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "ec8906d1_2590d7b8",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 5
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000890
+      },
+      "writtenOn": "2024-01-28T18:23:53Z",
+      "side": 1,
+      "message": "Can you explain how this can be useful to us? We ship GAPPS builds and does addonsu even work in U? Can’t think of any other zips that would require this, do tell if there’s any.",
+      "revId": "94a2da4300de0c2eef1426debed6039f50b8f238",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
