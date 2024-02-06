@@ -16,6 +16,24 @@
       "message": "this doesn\u0027t make sense to me, \n1) if a device doesn\u0027t have a battery then why show percentage at all?\n2) 5.4 and newer devices don\u0027t load charger modules in record which means percentage is not readable (yes it can be fixed from tree but we can\u0027t rely on that).",
       "revId": "201d5b80ee9c67a8c9dbad08baf0e7ab0287860a",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "17ec730f_686bed08",
+        "filename": "recovery_ui/screen_ui.cpp",
+        "patchSetId": 4
+      },
+      "lineNbr": 887,
+      "author": {
+        "id": 1000469
+      },
+      "writtenOn": "2024-02-06T17:22:30Z",
+      "side": 1,
+      "message": "recovery*",
+      "parentUuid": "17647b09_a9118f52",
+      "revId": "201d5b80ee9c67a8c9dbad08baf0e7ab0287860a",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
