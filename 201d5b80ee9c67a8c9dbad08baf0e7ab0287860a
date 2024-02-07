@@ -34,6 +34,24 @@
       "parentUuid": "17647b09_a9118f52",
       "revId": "201d5b80ee9c67a8c9dbad08baf0e7ab0287860a",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "afeaebc0_5fbe8040",
+        "filename": "recovery_ui/screen_ui.cpp",
+        "patchSetId": 4
+      },
+      "lineNbr": 887,
+      "author": {
+        "id": 1000890
+      },
+      "writtenOn": "2024-02-07T13:45:09Z",
+      "side": 1,
+      "message": "1) fair point and has been removed.\n2) well nothing can be done about it.\n\nHence abandoning the change",
+      "parentUuid": "17ec730f_686bed08",
+      "revId": "201d5b80ee9c67a8c9dbad08baf0e7ab0287860a",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
