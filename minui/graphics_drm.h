@@ -229,6 +229,7 @@ class MinuiBackendDrm : public MinuiBackend {
   void UpdatePlaneFB(DrmConnector index);
   int AtomicPopulatePlane(int plane, drmModeAtomicReqPtr atomic_req, DrmConnector index);
   bool FindAndSetMonitor(int fd, drmModeRes* resources);
+  int Initdisplay(DrmConnector index);
 
   struct DrmInterface {
     std::unique_ptr<GRSurfaceDrm> GRSurfaceDrms[2];
@@ -240,7 +241,7 @@ class MinuiBackendDrm : public MinuiBackend {
 
   int drm_fd{ -1 };
   DrmConnector active_display = DRM_MAIN;
-  bool current_blank_state = true;
+  bool current_blank_state[DRM_MAX];
   int fb_prop_id;
   struct Crtc crtc_res;
   struct Connector conn_res;

@@ -65,22 +65,20 @@
 
 #include "minui/minui.h"
 
-#define find_prop_id(_res, type, Type, obj_id, prop_name, prop_id, index)    \
-  do {                                                                \
-    int j = 0;                                                        \
-    int prop_count = 0;                                               \
-    struct Type *obj = NULL;                                          \
-    obj = (_res);                                                     \
-    if (!obj || drm[index].monitor_##type->type##_id != (obj_id)){          \
-      prop_id = 0;                                                    \
-      break;                                                          \
-    }                                                                 \
-    prop_count = (int)obj->props->count_props;                        \
-    for (j = 0; j < prop_count; ++j)                                  \
-      if (!strcmp(obj->props_info[j]->name, (prop_name)))             \
-        break;                                                        \
-    (prop_id) = (j == prop_count)?                                    \
-      0 : obj->props_info[j]->prop_id;                                \
+#define find_prop_id(_res, type, Type, obj_id, prop_name, prop_id, index)            \
+  do {                                                                               \
+    int j = 0;                                                                       \
+    int prop_count = 0;                                                              \
+    struct Type* obj = NULL;                                                         \
+    obj = (_res);                                                                    \
+    if (!obj || !(obj->props) || drm[index].monitor_##type->type##_id != (obj_id)) { \
+      prop_id = 0;                                                                   \
+      break;                                                                         \
+    }                                                                                \
+    prop_count = (int)obj->props->count_props;                                       \
+    for (j = 0; j < prop_count; ++j)                                                 \
+      if (!strcmp(obj->props_info[j]->name, (prop_name))) break;                     \
+    (prop_id) = (j == prop_count) ? 0 : obj->props_info[j]->prop_id;                 \
   } while (0)
 
 #define add_prop(res, type, Type, id, id_name, id_val, index) \
@@ -525,8 +523,100 @@ void MinuiBackendDrm::Blank(bool blank) {
   Blank(blank, DRM_MAIN);
 }
 
+int MinuiBackendDrm::Initdisplay(DrmConnector index) {
+  /* Get possible plane_ids */
+  drmModePlaneRes* plane_options = drmModeGetPlaneResources(drm_fd);
+  if (!plane_options || !plane_options->planes || (plane_options->count_planes < number_of_lms))
+    return -1;
+
+  /* Set crtc resources */
+  crtc_res.props =
+      drmModeObjectGetProperties(drm_fd, drm[index].monitor_crtc->crtc_id, DRM_MODE_OBJECT_CRTC);
+  if (!crtc_res.props) return -1;
+
+  crtc_res.props_info = static_cast<drmModePropertyRes**>(
+      calloc(crtc_res.props->count_props, sizeof(crtc_res.props_info)));
+  if (!crtc_res.props_info)
+    return -1;
+  else
+    for (int j = 0; j < (int)crtc_res.props->count_props; ++j) {
+      crtc_res.props_info[j] = drmModeGetProperty(drm_fd, crtc_res.props->props[j]);
+      /* Get spr property name */
+      if (!strcmp(crtc_res.props_info[j]->name, "SDE_SPR_INIT_CFG_V1") ||
+          !strcmp(crtc_res.props_info[j]->name, "SDE_SPR_INIT_CFG_V2")) {
+        spr_prop_name = crtc_res.props_info[j]->name;
+      }
+    }
+
+  /* Set connector resources */
+  conn_res.props = drmModeObjectGetProperties(drm_fd, drm[index].monitor_connector->connector_id,
+                                              DRM_MODE_OBJECT_CONNECTOR);
+  if (!conn_res.props) return -1;
+
+  conn_res.props_info = static_cast<drmModePropertyRes**>(
+      calloc(conn_res.props->count_props, sizeof(conn_res.props_info)));
+  if (!conn_res.props_info)
+    return -1;
+  else {
+    for (int j = 0; j < (int)conn_res.props->count_props; ++j) {
+      conn_res.props_info[j] = drmModeGetProperty(drm_fd, conn_res.props->props[j]);
+
+      /* Get preferred mode information and extract the
+       * number of layer mixers needed from the topology name.
+       */
+      if (!strcmp(conn_res.props_info[j]->name, "mode_properties")) {
+        number_of_lms = get_topology_lm_number(drm_fd, conn_res.props->prop_values[j]);
+        printf("number of lms in topology %d\n", number_of_lms);
+      }
+    }
+  }
+
+  /* Set plane resources */
+  for (uint32_t i = 0; i < number_of_lms; ++i) {
+    plane_res[i].plane = drmModeGetPlane(drm_fd, plane_options->planes[i]);
+    if (!plane_res[i].plane) return -1;
+  }
+
+  for (uint32_t i = 0; i < number_of_lms; ++i) {
+    struct Plane* obj = &plane_res[i];
+    unsigned int j;
+    obj->props = drmModeObjectGetProperties(drm_fd, obj->plane->plane_id, DRM_MODE_OBJECT_PLANE);
+    if (!obj->props) continue;
+    obj->props_info = static_cast<drmModePropertyRes**>(
+        calloc(obj->props->count_props, sizeof(*obj->props_info)));
+    if (!obj->props_info) continue;
+    for (j = 0; j < obj->props->count_props; ++j)
+      obj->props_info[j] = drmModeGetProperty(drm_fd, obj->props->props[j]);
+  }
+
+  drmModeFreePlaneResources(plane_options);
+  plane_options = NULL;
+
+  /* Setup spr blob id if enabled */
+  if (spr_enabled) {
+    if (SetupSprBlob(drm_fd, spr_prop_name, &crtc_res.spr_blob_id)) {
+      return -1;
+    }
+  }
+
+  /* Setup pipe and blob_id */
+  if (drmModeCreatePropertyBlob(drm_fd, &drm[index].monitor_crtc->mode, sizeof(drmModeModeInfo),
+                                &crtc_res.mode_blob_id)) {
+    printf("failed to create mode blob\n");
+    return -1;
+  }
+
+  /* Save fb_prop_id*/
+  uint32_t prop_id;
+  prop_id = find_plane_prop_id(plane_res[0].plane->plane_id, "FB_ID", plane_res);
+  fb_prop_id = prop_id;
+  return 0;
+}
+
 void MinuiBackendDrm::Blank(bool blank, DrmConnector index) {
   const auto* drmInterface = &drm[DRM_MAIN];
+
+  printf("[ENTRY]MinuiBackendDrm::Blank display %d blank %d\n", index, blank);
 
   switch (index) {
     case DRM_MAIN:
@@ -547,7 +637,7 @@ void MinuiBackendDrm::Blank(bool blank, DrmConnector index) {
 
   int ret = 0;
 
-  if (blank == current_blank_state)
+  if (blank == current_blank_state[index])
     return;
 
   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
@@ -558,16 +648,25 @@ void MinuiBackendDrm::Blank(bool blank, DrmConnector index) {
 
   if (blank)
     ret = DrmDisableCrtc(atomic_req, index);
-  else
+  else {
+    if (Initdisplay(index))
+      printf("Failed to init display [%d]\n", index);
     ret = DrmEnableCrtc(atomic_req, index);
+    active_display = index;
+  }
+  printf("[MID]MinuiBackendDrm::DrmEnableCrtc/DrmDisableCrtc[%d] err [%d]\n", blank, ret);
 
   if (!ret)
     ret = drmModeAtomicCommit(drm_fd, atomic_req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
 
   if (!ret) {
-    printf("Atomic Commit failed, rc = %d\n", ret);
-    current_blank_state = blank;
+    printf("Atomic Commit succeed");
+    current_blank_state[index] = blank;
   }
+  else {
+    printf("Atomic Commit failed, rc = %d\n", ret);
+  }
+  printf("[EXIT]MinuiBackendDrm::Blank display %d blank %d\n", index, blank);
 
   drmModeAtomicFree(atomic_req);
 }
@@ -693,6 +792,7 @@ bool MinuiBackendDrm::FindAndSetMonitor(int fd, drmModeRes* resources) {
 
 void MinuiBackendDrm::DisableNonMainCrtcs(int fd, drmModeRes* resources, drmModeCrtc* main_crtc) {
   uint32_t prop_id;
+  int ret = 0;
   drmModeAtomicReqPtr atomic_req = drmModeAtomicAlloc();
 
   for (int i = 0; i < resources->count_connectors; i++) {
@@ -701,17 +801,18 @@ void MinuiBackendDrm::DisableNonMainCrtcs(int fd, drmModeRes* resources, drmMode
     if (crtc->crtc_id != main_crtc->crtc_id) {
       // Switching to atomic commit. Given only crtc, we can only set ACTIVE = 0
       // to disable any Nonmain CRTCs
-      find_prop_id(&crtc_res, crtc, Crtc, crtc->crtc_id, "ACTIVE", prop_id, i);
+      find_prop_id(&crtc_res, crtc, Crtc, crtc->crtc_id, "ACTIVE", prop_id, DRM_SEC);
       if (prop_id == 0)
         return;
 
-      if (drmModeAtomicAddProperty(atomic_req, drm[i].monitor_crtc->crtc_id, prop_id, 0) < 0)
+      if (drmModeAtomicAddProperty(atomic_req, drm[DRM_SEC].monitor_crtc->crtc_id, prop_id, 0) < 0)
         return;
     }
     drmModeFreeCrtc(crtc);
   }
 
-  if (!drmModeAtomicCommit(drm_fd, atomic_req,DRM_MODE_ATOMIC_ALLOW_MODESET, NULL))
+  ret = drmModeAtomicCommit(drm_fd, atomic_req,DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+  if (ret)
     printf("Atomic Commit failed in DisableNonMainCrtcs\n");
 
   drmModeAtomicFree(atomic_req);
@@ -750,6 +851,7 @@ void MinuiBackendDrm::UpdatePlaneFB(DrmConnector index) {
 }
 
 GRSurface* MinuiBackendDrm::Init() {
+  int ret = 0;
   drmModeRes* res = nullptr;
   drm_fd = -1;
 
@@ -827,105 +929,14 @@ GRSurface* MinuiBackendDrm::Init() {
   drmSetClientCap(drm_fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
   drmSetClientCap(drm_fd, DRM_CLIENT_CAP_ATOMIC, 1);
 
-  /* Get possible plane_ids */
-  drmModePlaneRes *plane_options = drmModeGetPlaneResources(drm_fd);
-  if (!plane_options || !plane_options->planes || (plane_options->count_planes < number_of_lms))
-    return NULL;
-
-  /* Set crtc resources */
-  crtc_res.props = drmModeObjectGetProperties(drm_fd,
-                      drm[DRM_MAIN].monitor_crtc->crtc_id,
-                      DRM_MODE_OBJECT_CRTC);
-  if (!crtc_res.props)
-    return NULL;
-
-  crtc_res.props_info = static_cast<drmModePropertyRes **>
-                           (calloc(crtc_res.props->count_props,
-                           sizeof(crtc_res.props_info)));
-  if (!crtc_res.props_info)
-    return NULL;
-  else
-    for (int j = 0; j < (int)crtc_res.props->count_props; ++j) {
-      crtc_res.props_info[j] = drmModeGetProperty(drm_fd,
-                                   crtc_res.props->props[j]);
-      /* Get spr property name */
-      if (!strcmp(crtc_res.props_info[j]->name, "SDE_SPR_INIT_CFG_V1") ||
-          !strcmp(crtc_res.props_info[j]->name, "SDE_SPR_INIT_CFG_V2")) {
-        spr_prop_name = crtc_res.props_info[j]->name;
-      }
-    }
-
-  /* Set connector resources */
-  conn_res.props = drmModeObjectGetProperties(drm_fd,
-                     drm[DRM_MAIN].monitor_connector->connector_id,
-                     DRM_MODE_OBJECT_CONNECTOR);
-  if (!conn_res.props)
-    return NULL;
-
-  conn_res.props_info = static_cast<drmModePropertyRes **>
-                         (calloc(conn_res.props->count_props,
-                         sizeof(conn_res.props_info)));
-  if (!conn_res.props_info)
-    return NULL;
-  else {
-    for (int j = 0; j < (int)conn_res.props->count_props; ++j) {
-
-      conn_res.props_info[j] = drmModeGetProperty(drm_fd,
-                                 conn_res.props->props[j]);
-
-      /* Get preferred mode information and extract the
-       * number of layer mixers needed from the topology name.
-       */
-      if (!strcmp(conn_res.props_info[j]->name, "mode_properties")) {
-        number_of_lms = get_topology_lm_number(drm_fd, conn_res.props->prop_values[j]);
-        printf("number of lms in topology %d\n", number_of_lms);
-      }
-    }
-  }
-
-  /* Set plane resources */
-  for(uint32_t i = 0; i < number_of_lms; ++i) {
-    plane_res[i].plane = drmModeGetPlane(drm_fd, plane_options->planes[i]);
-    if (!plane_res[i].plane)
-      return NULL;
-  }
-
-  for (uint32_t i = 0; i < number_of_lms; ++i) {
-    struct Plane *obj = &plane_res[i];
-    unsigned int j;
-    obj->props = drmModeObjectGetProperties(drm_fd, obj->plane->plane_id,
-                    DRM_MODE_OBJECT_PLANE);
-    if (!obj->props)
-      continue;
-    obj->props_info = static_cast<drmModePropertyRes **>
-                         (calloc(obj->props->count_props, sizeof(*obj->props_info)));
-    if (!obj->props_info)
-      continue;
-    for (j = 0; j < obj->props->count_props; ++j)
-      obj->props_info[j] = drmModeGetProperty(drm_fd, obj->props->props[j]);
-  }
-
-  drmModeFreePlaneResources(plane_options);
-  plane_options = NULL;
-
-  /* Setup spr blob id if enabled */
-  if (spr_enabled) {
-    if (SetupSprBlob(drm_fd, spr_prop_name, &crtc_res.spr_blob_id)) {
-      return NULL;
-    }
-  }
-
-  /* Setup pipe and blob_id */
-  if (drmModeCreatePropertyBlob(drm_fd, &drm[DRM_MAIN].monitor_crtc->mode, sizeof(drmModeModeInfo),
-      &crtc_res.mode_blob_id)) {
-    printf("failed to create mode blob\n");
+  ret = Initdisplay(DRM_MAIN);
+  if (ret) {
+    printf("Failed to init display\n");
     return NULL;
   }
 
-  /* Save fb_prop_id*/
-  uint32_t prop_id;
-  prop_id = find_plane_prop_id(plane_res[0].plane->plane_id, "FB_ID", plane_res);
-  fb_prop_id = prop_id;
+  current_blank_state[DRM_MAIN] = true;
+  current_blank_state[DRM_SEC] = true;
 
   Blank(false);
 
