@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "edify/expr.h"
 #include "edify/updater_runtime_interface.h"
 
 struct selabel_handle;
@@ -55,7 +56,8 @@ class UpdaterRuntime : public UpdaterRuntimeInterface {
 
   bool MapPartitionOnDeviceMapper(const std::string& partition_name, std::string* path) override;
   bool UnmapPartitionOnDeviceMapper(const std::string& partition_name) override;
-  bool UpdateDynamicPartitions(const std::string_view op_list_value) override;
+  bool UpdateDynamicPartitions(const std::string_view op_list_value,
+                               const std::string_view super_empty_value) override;
   std::string AddSlotSuffix(const std::string_view arg) const override;
 
  private:
