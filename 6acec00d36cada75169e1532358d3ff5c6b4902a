@@ -16,6 +16,24 @@
       "message": "what is the behavior without this change?  if I wipe uvite, does it mean I still can\u0027t flash topaz (with an earlier SPL) in recovery?",
       "revId": "6acec00d36cada75169e1532358d3ff5c6b4902a",
       "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "51705058_c2c5e977",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000469
+      },
+      "writtenOn": "2024-03-28T08:42:22Z",
+      "side": 1,
+      "message": "nope, simply allows downgrade to same spl build though even that fails in some cases",
+      "parentUuid": "74d06378_e3419070",
+      "revId": "6acec00d36cada75169e1532358d3ff5c6b4902a",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
     }
   ]
 }
