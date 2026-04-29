@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "cb0bc426_f7325223",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1000579
+      },
+      "writtenOn": "2026-04-29T01:34:54Z",
+      "side": 1,
+      "message": "bootable/recovery/recovery_ui/screen_ui.cpp:777:25: error: use of undeclared identifier \u0027lineage_logo_\u0027\n  777 |   int y \u003d gr_get_height(lineage_logo_.get());\n      |                         ^\n1 error generated.",
+      "revId": "f7b53665057f5aab12f16dfe34450fd2321cf6e2",
+      "serverId": "3162e3d8-d894-470e-abd9-724f7b0effad"
+    }
+  ]
+}
